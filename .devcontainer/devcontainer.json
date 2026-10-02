@@ -1,0 +1,10 @@
+{
+  "name": "Fluency",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:24",
+  "forwardPorts": [5173, 4173],
+  "portsAttributes": {
+    "5173": { "label": "Vite dev" },
+    "4173": { "label": "Vite preview" }
+  },
+  "postCreateCommand": "npm install"
+}
