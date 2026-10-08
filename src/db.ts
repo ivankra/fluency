@@ -95,6 +95,8 @@ export const deleteDeck = (id: string) =>
 
 export const listCards = (deckId: string) => db.cards.where('deckId').equals(deckId).toArray()
 
+export const countCards = (deckId: string) => db.cards.where('deckId').equals(deckId).count()
+
 export async function addCard(deckId: string, front: string, back: string): Promise<Card> {
   const now = Date.now()
   const card = { id: newId(), deckId, front, back, sched: newSched(now), updatedAt: now }
