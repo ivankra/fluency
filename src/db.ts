@@ -71,7 +71,8 @@ export const newSched = (now = Date.now()): Sched => ({
 
 // --- Decks ---
 
-export const listDecks = () => db.decks.orderBy('name').toArray()
+// `name` isn't indexed, so sort in memory rather than with orderBy().
+export const listDecks = () => db.decks.toCollection().sortBy('name')
 
 export async function addDeck(name: string): Promise<Deck> {
   const deck = { id: newId(), name, updatedAt: Date.now() }
