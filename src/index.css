@@ -12,3 +12,50 @@ main {
   display: grid;
   place-items: center;
 }
+
+.ios-install {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: Canvas;
+  color: CanvasText;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.2);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.ios-install__icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.ios-install__text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.ios-install__share {
+  vertical-align: -3px;
+  color: #007aff;
+}
+
+.ios-install__close {
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 24px;
+  line-height: 1;
+  padding: 4px 8px;
+  opacity: 0.6;
+  cursor: pointer;
+}
