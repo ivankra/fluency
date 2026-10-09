@@ -4,9 +4,10 @@
 // Failing a card sends it back to that state, due again in RELEARN_DELAY, so it
 // returns in the same session (Study requeues it); the next success graduates it to 1 day.
 import { type Grade, type Sched } from './db'
+import { DAY, MINUTE } from './time'
 
-export const DAY = 86_400_000
-const RELEARN_DELAY = 10 * 60_000
+const RELEARN_DELAY = 10 * MINUTE
+const SKIP_DAYS = 3
 const MIN_EASE = 1.3
 const FAIR_FACTOR = 1.2 // interval multiplier for "fair"; "good" uses the card's ease
 const EASE_DELTA: Record<Grade, number> = { 1: -0.2, 2: -0.15, 3: 0 }
@@ -28,3 +29,6 @@ export function schedule(sched: Sched, grade: Grade, now = Date.now()): Sched {
   const interval = Math.max(sched.interval + 1, Math.round(sched.interval * factor))
   return { ...sched, reps, ease, interval, due: now + interval * DAY }
 }
+
+// Hide a card for a few days without affecting its ease, interval or counters.
+export const skip = (sched: Sched, now = Date.now()): Sched => ({ ...sched, due: now + SKIP_DAYS * DAY })

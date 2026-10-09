@@ -394,3 +394,17 @@ a.btn {
 .toast__text {
   flex: 1;
 }
+
+/* Keyboard shortcut hints; useless on touch screens. */
+.btn kbd {
+  font: inherit;
+  font-size: 12px;
+  opacity: 0.6;
+  margin-left: 4px;
+}
+
+@media (hover: none) {
+  .btn kbd {
+    display: none;
+  }
+}

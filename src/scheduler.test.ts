@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { newSched } from './db'
-import { DAY, schedule } from './scheduler'
+import { schedule, skip } from './scheduler'
+import { DAY } from './time'
 
 const NOW = 1_000_000_000_000
 const review = (interval: number, ease = 2.5) => ({ ...newSched(NOW), interval, ease, reps: 3 })
@@ -45,6 +46,11 @@ describe('schedule', () => {
 
   it('never lets ease drop below 1.3', () => {
     expect(schedule(review(10, 1.35), 1, NOW).ease).toBe(1.3)
+  })
+
+  it('skip only moves the due date', () => {
+    const s = review(10)
+    expect(skip(s, NOW)).toEqual({ ...s, due: NOW + 3 * DAY })
   })
 
   it('does not mutate its input', () => {

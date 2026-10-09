@@ -39,8 +39,17 @@ For each card:
 3. The user self-rates **Bad / Fair / Good**. The attempt is logged and `sched` is
    replaced by the result of `schedule()`, in one transaction.
 
+Keyboard: **Enter** reveals the answer. After that nothing is being typed, so
+**1 / 2 / 3** grade Bad / Fair / Good, **Space** grades Good, **-** skips (Anki's bury
+key) and **Ctrl/Cmd+Z** undoes. Shortcuts are ignored while a text field is focused.
+
 **Skip** hides the card for 3 days and does not log a review or touch the schedule's
 ease, interval or counters. A card can be edited mid-session.
+
+**Undo** steps back to the previous card for the current session: it deletes that review
+(or skip), restores the card's old schedule, removes any retry copy it queued, and
+shows the card as it was, with the typed text and revealed answer. Text typed on the
+card you left is kept and restored when you return to it.
 
 ## Scheduling
 
