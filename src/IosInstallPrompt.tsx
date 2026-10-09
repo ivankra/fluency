@@ -67,7 +67,7 @@ export default function IosInstallPrompt() {
 
   return (
     <div className="ios-install" role="dialog" aria-label="Install Fluency">
-      <img className="ios-install__icon" src="/apple-touch-icon.png" alt="" />
+      <img className="ios-install__icon" src={`${import.meta.env.BASE_URL}apple-touch-icon.png`} alt="" />
       <div className="ios-install__text">
         <strong>Install Fluency</strong>
         <span>

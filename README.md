@@ -25,6 +25,8 @@ make test      # unit tests (vitest)
 
 Run `make help` to list every target. Without `make`, use `npm install`, `npm run dev`, `npm run build`, `npm run preview` and `npm test`.
 
+The app works under any URL prefix, set at build time with `BASE_PATH` (default `/`). Pushes to `main` are deployed to GitHub Pages under `/<repo name>/` by `.github/workflows/deploy.yml`; set Settings → Pages → Source to "GitHub Actions" once. To try a prefixed build locally: `BASE_PATH=/fluency/ make preview`, then open `/fluency/`.
+
 The service worker is off under `make dev`. To test installing the app or using it offline, use `make preview`.
 
 ## Project layout
