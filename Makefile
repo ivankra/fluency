@@ -1,4 +1,4 @@
-.PHONY: help install dev build preview typecheck clean distclean
+.PHONY: help install dev build preview typecheck test clean distclean
 
 help: ## Show available targets
 	@grep -E '^[a-z]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -20,6 +20,9 @@ preview: build ## Build and serve the production bundle (test PWA install/offlin
 
 typecheck: node_modules ## Run the TypeScript compiler without emitting
 	npx tsc --noEmit
+
+test: node_modules ## Run unit tests
+	npm test
 
 clean: ## Remove build output
 	rm -rf dist dev-dist
