@@ -4,15 +4,18 @@ import { addCard, deleteCard, deleteDeck, editCard, gradeCounts, listCards, list
 import { exportDeckCsv } from './exportFile'
 import CardForm from './CardForm'
 import { href } from './route'
+import { DAY } from './scheduler'
 
-const HOUR = 3_600_000
-const DAY = 24 * HOUR
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
 
 function dueText(due: number, now: number) {
   const wait = due - now
   if (wait <= 0) return 'due now'
+  const minutes = Math.round(wait / MINUTE)
+  if (minutes < 60) return `due in ${Math.max(minutes, 1)}m`
   const hours = Math.round(wait / HOUR)
-  return hours < 24 ? `due in ${Math.max(hours, 1)}h` : `due in ${Math.round(wait / DAY)}d`
+  return hours < 24 ? `due in ${hours}h` : `due in ${Math.round(wait / DAY)}d`
 }
 
 const GRADE_NAMES = ['Bad', 'Fair', 'Good']

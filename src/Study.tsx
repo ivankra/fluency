@@ -1,8 +1,11 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import CardForm from './CardForm'
 import { editCard, getDueCards, recordReview, skipCard, type Card, type Grade } from './db'
 import { schedule } from './scheduler'
 import { href } from './route'
+
+// A failed card is requeued this many times at most per session, so it can't loop forever.
+const MAX_RETRIES = 2
 
 const GRADES: { grade: Grade; label: string; className: string }[] = [
   { grade: 1, label: 'Bad', className: 'btn btn--danger' },
@@ -18,6 +21,7 @@ export default function Study({ deckId }: { deckId: string }) {
   const [revealed, setRevealed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
+  const retries = useRef(new Map<string, number>())
 
   useEffect(() => {
     let stale = false
@@ -50,7 +54,16 @@ export default function Study({ deckId }: { deckId: string }) {
   }
 
   const grade = (g: Grade) =>
-    finish((c) => recordReview(c, g, schedule(c.sched, g), answer.trim() || undefined))
+    finish(async (c) => {
+      const sched = schedule(c.sched, g)
+      await recordReview(c, g, sched, answer.trim() || undefined)
+      // interval 0 means the card is back to (re)learning: show it again this session.
+      const tries = retries.current.get(c.id) ?? 0
+      if (sched.interval === 0 && tries < MAX_RETRIES) {
+        retries.current.set(c.id, tries + 1)
+        setQueue((q) => q && [...q, { ...c, sched }])
+      }
+    })
 
   // Fix a typo mid-session. Our snapshot of the card is updated too, so the fix shows at once.
   const saveEdit = async (front: string, back: string) => {
