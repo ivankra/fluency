@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { getDueCards, recordReview, skipCard, type Card, type Grade } from './db'
+import CardForm from './CardForm'
+import { editCard, getDueCards, recordReview, skipCard, type Card, type Grade } from './db'
 import { schedule } from './scheduler'
+import { href } from './route'
 
 const GRADES: { grade: Grade; label: string; className: string }[] = [
   { grade: 1, label: 'Bad', className: 'btn btn--danger' },
@@ -8,13 +10,14 @@ const GRADES: { grade: Grade; label: string; className: string }[] = [
   { grade: 3, label: 'Good', className: 'btn btn--primary' },
 ]
 
-export default function Study({ deckId, onBack }: { deckId: string; onBack: () => void }) {
+export default function Study({ deckId }: { deckId: string }) {
   // The queue is a snapshot taken on entry, so cards don't shuffle while we work through it.
   const [queue, setQueue] = useState<Card[] | null>(null)
   const [index, setIndex] = useState(0)
   const [answer, setAnswer] = useState('')
   const [revealed, setRevealed] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
 
   useEffect(() => {
     let stale = false
@@ -49,6 +52,14 @@ export default function Study({ deckId, onBack }: { deckId: string; onBack: () =
   const grade = (g: Grade) =>
     finish((c) => recordReview(c, g, schedule(c.sched, g), answer.trim() || undefined))
 
+  // Fix a typo mid-session. Our snapshot of the card is updated too, so the fix shows at once.
+  const saveEdit = async (front: string, back: string) => {
+    if (!card) return
+    await editCard(card.id, front, back)
+    setQueue(queue.map((c) => (c.id === card.id ? { ...c, front, back } : c)))
+    setEditing(false)
+  }
+
   const reveal = (e: FormEvent) => {
     e.preventDefault()
     setRevealed(true)
@@ -63,19 +74,35 @@ export default function Study({ deckId, onBack }: { deckId: string; onBack: () =
   return (
     <>
       <header className="bar">
-        <button className="btn" onClick={onBack} aria-label="Back to decks">
+        <a className="btn" href={href.list} aria-label="Back to decks">
           ‹ Decks
-        </button>
+        </a>
         <h1 className="bar__title">Study</h1>
         {card && (
-          <span className="muted">
-            {index + 1} / {queue.length}
-          </span>
+          <>
+            <span className="muted">
+              {index + 1} / {queue.length}
+            </span>
+            <button className="btn btn--small" disabled={editing || busy} onClick={() => setEditing(true)}>
+              Edit card
+            </button>
+          </>
         )}
       </header>
 
       {!card ? (
         <p className="muted empty">{queue.length ? 'Done!' : 'Nothing due right now.'}</p>
+      ) : editing ? (
+        <section className="panel">
+          <CardForm
+            key={card.id}
+            initialFront={card.front}
+            initialBack={card.back}
+            submitLabel="Save"
+            onSubmit={saveEdit}
+            onCancel={() => setEditing(false)}
+          />
+        </section>
       ) : (
         <section className="panel study">
           <p className="study__prompt">{card.front}</p>

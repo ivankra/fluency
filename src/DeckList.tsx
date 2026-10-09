@@ -2,25 +2,27 @@ import { useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { addDeck, countDueCards, listDecks, type Deck } from './db'
 import { exportBackupJson } from './exportFile'
+import { href } from './route'
 
 // Tapping the row starts studying; Edit opens the deck's cards.
-function DeckRow({ deck, onStudy, onEdit }: { deck: Deck; onStudy: () => void; onEdit: () => void }) {
+function DeckRow({ deck }: { deck: Deck }) {
   const due = useLiveQuery(() => countDueCards(deck.id), [deck.id])
   return (
     <li className="deck-item">
-      <button className="deck-row" onClick={onStudy}>
+      <a className="deck-row" href={href.study(deck.id)}>
         <span className="deck-row__name">{deck.name}</span>
         <span className="muted">{due === undefined ? '…' : `${due} due`}</span>
-      </button>
-      <button className="btn" onClick={onEdit} aria-label={`Edit ${deck.name}`}>
+      </a>
+      <a className="btn" href={href.edit(deck.id)} aria-label={`Edit ${deck.name}`}>
         Edit
-      </button>
+      </a>
     </li>
   )
 }
 
-export default function DeckList({ onStudy, onEdit }: { onStudy: (deckId: string) => void; onEdit: (deckId: string) => void }) {
+export default function DeckList() {
   const decks = useLiveQuery(listDecks)
+  const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
 
   const create = async (e: FormEvent) => {
@@ -29,34 +31,41 @@ export default function DeckList({ onStudy, onEdit }: { onStudy: (deckId: string
     if (!trimmed) return
     const deck = await addDeck(trimmed)
     setName('')
-    onEdit(deck.id)
+    setCreating(false)
+    location.hash = href.edit(deck.id)
   }
 
   return (
     <>
       <header className="bar">
-        <h1>Fluency</h1>
-        <button className="btn" onClick={exportBackupJson}>
+        <h1 className="bar__title">Fluency</h1>
+        <button className="btn btn--small" onClick={() => setCreating(!creating)}>
+          New deck
+        </button>
+        <button className="btn btn--small" onClick={exportBackupJson}>
           Export all
         </button>
       </header>
 
-      <form className="inline-form" onSubmit={create}>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="New deck name"
-          aria-label="New deck name"
-        />
-        <button className="btn btn--primary" disabled={!name.trim()}>
-          Create deck
-        </button>
-      </form>
+      {creating && (
+        <form className="inline-form" onSubmit={create}>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="New deck name"
+            aria-label="New deck name"
+            autoFocus
+          />
+          <button className="btn btn--primary" disabled={!name.trim()}>
+            Create
+          </button>
+        </form>
+      )}
 
-      {decks?.length === 0 && <p className="muted empty">No decks yet. Create one above.</p>}
+      {decks?.length === 0 && <p className="muted empty">No decks yet. Tap “New deck” to create one.</p>}
       <ul className="list">
         {decks?.map((deck) => (
-          <DeckRow key={deck.id} deck={deck} onStudy={() => onStudy(deck.id)} onEdit={() => onEdit(deck.id)} />
+          <DeckRow key={deck.id} deck={deck} />
         ))}
       </ul>
     </>

@@ -140,6 +140,21 @@ export const skipCard = (card: Card, days = 3) =>
     updatedAt: Date.now(),
   })
 
+// Per-card attempt counts as [bad, fair, good], for cards in a deck.
+export async function gradeCounts(deckId: string) {
+  const counts = new Map<string, [number, number, number]>()
+  const cardIds = await db.cards.where('deckId').equals(deckId).primaryKeys()
+  await db.reviews
+    .where('cardId')
+    .anyOf(cardIds)
+    .each((r) => {
+      const c = counts.get(r.cardId) ?? [0, 0, 0]
+      c[r.grade - 1]++
+      counts.set(r.cardId, c)
+    })
+  return counts
+}
+
 export const listReviews = (cardId: string) =>
   db.reviews.where('cardId').equals(cardId).sortBy('at')
 
