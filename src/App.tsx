@@ -1,28 +1,26 @@
-import { useState } from 'react'
 import DeckList from './DeckList'
 import DeckView from './DeckView'
 import Study from './Study'
+import UpdateToast from './UpdateToast'
 import IosInstallPrompt from './IosInstallPrompt'
-
-type View = { name: 'list' } | { name: 'study' | 'edit'; deckId: string }
+import { useRoute } from './route'
 
 export default function App() {
-  const [view, setView] = useState<View>({ name: 'list' })
-  const toList = () => setView({ name: 'list' })
+  const route = useRoute()
 
   return (
     <main>
-      {view.name === 'study' ? (
-        <Study deckId={view.deckId} onBack={toList} />
-      ) : view.name === 'edit' ? (
-        <DeckView deckId={view.deckId} onBack={toList} />
+      {route.name === 'study' ? (
+        <Study key={route.deckId} deckId={route.deckId} />
+      ) : route.name === 'edit' ? (
+        <DeckView key={route.deckId} deckId={route.deckId} />
       ) : (
-        <DeckList
-          onStudy={(deckId) => setView({ name: 'study', deckId })}
-          onEdit={(deckId) => setView({ name: 'edit', deckId })}
-        />
+        <DeckList />
       )}
-      <IosInstallPrompt />
+      <div className="banners">
+        <UpdateToast />
+        <IosInstallPrompt />
+      </div>
     </main>
   )
 }

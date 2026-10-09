@@ -22,6 +22,8 @@ main {
   --accent: #4f46e5;
   --accent-text: #ffffff;
   --danger: #c62828;
+  --warn: #b26a00;
+  --good: #2e7d32;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -34,6 +36,8 @@ main {
     --accent: #8b85ff;
     --accent-text: #121218;
     --danger: #ff6b6b;
+    --warn: #ffb74d;
+    --good: #66bb6a;
   }
 }
 
@@ -90,6 +94,17 @@ textarea {
   padding: 8px 14px;
   cursor: pointer;
   white-space: nowrap;
+}
+
+a.btn,
+a.deck-row {
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
+a.btn {
+  display: inline-flex;
+  align-items: center;
 }
 
 .btn:disabled {
@@ -216,6 +231,32 @@ textarea {
   margin-top: 4px;
 }
 
+.card-row__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.grade {
+  font-weight: 700;
+  cursor: help;
+}
+
+.grade--1 {
+  color: var(--danger);
+}
+
+.grade--2 {
+  color: var(--warn);
+}
+
+.grade--3 {
+  color: var(--good);
+}
+
 .card-row__actions {
   display: flex;
   gap: 6px;
@@ -246,11 +287,19 @@ textarea {
   gap: 8px;
 }
 
-.ios-install {
+.banners {
   position: fixed;
   left: 12px;
   right: 12px;
   bottom: calc(12px + env(safe-area-inset-bottom));
+  max-width: 616px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ios-install {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -327,5 +376,21 @@ textarea {
 }
 
 .study__actions .btn {
+  flex: 1;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.2);
+  font-size: 14px;
+}
+
+.toast__text {
   flex: 1;
 }
