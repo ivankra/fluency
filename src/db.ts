@@ -30,6 +30,11 @@ export interface Card {
 }
 
 export type Grade = 1 | 2 | 3 // bad, fair, good
+export const GRADES: { grade: Grade; label: string }[] = [
+  { grade: 1, label: 'Bad' },
+  { grade: 2, label: 'Fair' },
+  { grade: 3, label: 'Good' },
+]
 
 // One past attempt. Skipped cards are not recorded here.
 export interface Review {
@@ -74,6 +79,8 @@ export const newSched = (now = Date.now()): Sched => ({
 // `name` isn't indexed, so sort in memory rather than with orderBy().
 export const listDecks = () => db.decks.toCollection().sortBy('name')
 
+export const getDeck = async (id: string) => (await db.decks.get(id)) ?? null
+
 export async function addDeck(name: string): Promise<Deck> {
   const deck = { id: newId(), name, updatedAt: Date.now() }
   await db.decks.add(deck)
@@ -94,8 +101,6 @@ export const deleteDeck = (id: string) =>
 // --- Cards ---
 
 export const listCards = (deckId: string) => db.cards.where('deckId').equals(deckId).toArray()
-
-export const countCards = (deckId: string) => db.cards.where('deckId').equals(deckId).count()
 
 export async function addCard(deckId: string, front: string, back: string): Promise<Card> {
   const now = Date.now()
@@ -129,16 +134,22 @@ export const countDueCards = (deckId: string, now = Date.now()) => dueCards(deck
 export const recordReview = (card: Card, grade: Grade, sched: Sched, answer?: string) =>
   db.transaction('rw', db.cards, db.reviews, async () => {
     const now = Date.now()
-    await db.reviews.add({ id: newId(), cardId: card.id, at: now, grade, answer })
+    const id = newId()
+    await db.reviews.add({ id, cardId: card.id, at: now, grade, answer })
     await db.cards.update(card.id, { sched, updatedAt: now })
+    return id
   })
 
-// Skip: hide the card for a few days. Not a review, so no history entry.
-export const skipCard = (card: Card, days = 3) =>
-  db.cards.update(card.id, {
-    sched: { ...card.sched, due: Date.now() + days * 86_400_000 },
-    updatedAt: Date.now(),
+// Take back a review or skip: restore the card's old schedule and drop the review, if any.
+export const undoAttempt = (cardId: string, sched: Sched, reviewId?: string) =>
+  db.transaction('rw', db.cards, db.reviews, async () => {
+    if (reviewId) await db.reviews.delete(reviewId)
+    await db.cards.update(cardId, { sched, updatedAt: Date.now() })
   })
+
+// Skip: not a review, so no history entry. The caller (scheduler) computes `sched`.
+export const skipCard = (card: Card, sched: Sched) =>
+  db.cards.update(card.id, { sched, updatedAt: Date.now() })
 
 // Per-card attempt counts as [bad, fair, good], for cards in a deck.
 export async function gradeCounts(deckId: string) {
@@ -154,9 +165,6 @@ export async function gradeCounts(deckId: string) {
     })
   return counts
 }
-
-export const listReviews = (cardId: string) =>
-  db.reviews.where('cardId').equals(cardId).sortBy('at')
 
 // --- Backup (JSON export/import, also the basis for Drive sync) ---
 

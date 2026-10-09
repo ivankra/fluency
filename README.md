@@ -38,6 +38,7 @@ The service worker is off under `make dev`. To test installing the app or using 
 | `src/route.ts` | Hash router |
 | `src/db.ts` | On-device storage (IndexedDB via Dexie): decks, cards, reviews, backup |
 | `src/scheduler.ts` | Spaced-repetition scheduler (`scheduler.test.ts` has its tests) |
+| `src/time.ts` | Time constants shared by the scheduler and the UI |
 | `src/DeckList.tsx` | Home screen: decks and due counts |
 | `src/Study.tsx` | Study session |
 | `src/DeckView.tsx`, `src/CardForm.tsx` | Deck editor: add, edit and delete cards |

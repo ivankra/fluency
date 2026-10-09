@@ -1,13 +1,10 @@
 import { useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { addCard, deleteCard, deleteDeck, editCard, gradeCounts, listCards, listDecks, renameDeck, type Card, type Sched } from './db'
+import { GRADES, addCard, deleteCard, deleteDeck, editCard, getDeck, gradeCounts, listCards, renameDeck, type Card, type Sched } from './db'
 import { exportDeckCsv } from './exportFile'
 import CardForm from './CardForm'
 import { href } from './route'
-import { DAY } from './scheduler'
-
-const MINUTE = 60_000
-const HOUR = 60 * MINUTE
+import { DAY, HOUR, MINUTE } from './time'
 
 function dueText(due: number, now: number) {
   const wait = due - now
@@ -18,18 +15,16 @@ function dueText(due: number, now: number) {
   return hours < 24 ? `due in ${hours}h` : `due in ${Math.round(wait / DAY)}d`
 }
 
-const GRADE_NAMES = ['Bad', 'Fair', 'Good']
-
 // e.g. "2 1 4 · due in 3d", where the numbers count Bad / Fair / Good attempts.
 function CardStats({ sched, counts }: { sched: Sched; counts?: number[] }) {
   return (
     <div className="card-row__stats">
       {counts ? (
-        counts.map(
-          (n, i) =>
-            n > 0 && (
-              <span key={i} className={`grade grade--${i + 1}`} title={`${GRADE_NAMES[i]}: ${n} ${n === 1 ? 'attempt' : 'attempts'}`}>
-                {n}
+        GRADES.map(
+          ({ grade, label }) =>
+            counts[grade - 1] > 0 && (
+              <span key={grade} className={`grade grade--${grade}`} title={`${label}: ${counts[grade - 1]} ${counts[grade - 1] === 1 ? 'attempt' : 'attempts'}`}>
+                {counts[grade - 1]}
               </span>
             ),
         )
@@ -82,7 +77,7 @@ function CardRow({ card, counts }: { card: Card; counts?: number[] }) {
 }
 
 export default function DeckView({ deckId }: { deckId: string }) {
-  const deck = useLiveQuery(async () => (await listDecks()).find((d) => d.id === deckId) ?? null, [deckId])
+  const deck = useLiveQuery(() => getDeck(deckId), [deckId])
   const cards = useLiveQuery(
     async () => (await listCards(deckId)).sort((a, b) => a.front.localeCompare(b.front)),
     [deckId],
