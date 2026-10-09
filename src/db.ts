@@ -113,13 +113,14 @@ export const deleteCard = (id: string) =>
     await db.cards.delete(id)
   })
 
+const dueCards = (deckId: string, now: number) =>
+  db.cards.where('[deckId+sched.due]').between([deckId, Dexie.minKey], [deckId, now], true, true)
+
 // Cards due for review, soonest first.
 export const getDueCards = (deckId: string, now = Date.now(), limit = 20) =>
-  db.cards
-    .where('[deckId+sched.due]')
-    .between([deckId, Dexie.minKey], [deckId, now], true, true)
-    .limit(limit)
-    .toArray()
+  dueCards(deckId, now).limit(limit).toArray()
+
+export const countDueCards = (deckId: string, now = Date.now()) => dueCards(deckId, now).count()
 
 // --- Reviews ---
 

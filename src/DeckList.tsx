@@ -1,23 +1,25 @@
 import { useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { addDeck, countCards, listDecks, type Deck } from './db'
+import { addDeck, countDueCards, listDecks, type Deck } from './db'
 import { exportBackupJson } from './exportFile'
 
-function DeckRow({ deck, onOpen }: { deck: Deck; onOpen: () => void }) {
-  const count = useLiveQuery(() => countCards(deck.id), [deck.id])
+// Tapping the row starts studying; Edit opens the deck's cards.
+function DeckRow({ deck, onStudy, onEdit }: { deck: Deck; onStudy: () => void; onEdit: () => void }) {
+  const due = useLiveQuery(() => countDueCards(deck.id), [deck.id])
   return (
-    <li>
-      <button className="deck-row" onClick={onOpen}>
+    <li className="deck-item">
+      <button className="deck-row" onClick={onStudy}>
         <span className="deck-row__name">{deck.name}</span>
-        <span className="muted">
-          {count ?? '…'} {count === 1 ? 'card' : 'cards'}
-        </span>
+        <span className="muted">{due === undefined ? '…' : `${due} due`}</span>
+      </button>
+      <button className="btn" onClick={onEdit} aria-label={`Edit ${deck.name}`}>
+        Edit
       </button>
     </li>
   )
 }
 
-export default function DeckList({ onOpen }: { onOpen: (deckId: string) => void }) {
+export default function DeckList({ onStudy, onEdit }: { onStudy: (deckId: string) => void; onEdit: (deckId: string) => void }) {
   const decks = useLiveQuery(listDecks)
   const [name, setName] = useState('')
 
@@ -27,7 +29,7 @@ export default function DeckList({ onOpen }: { onOpen: (deckId: string) => void 
     if (!trimmed) return
     const deck = await addDeck(trimmed)
     setName('')
-    onOpen(deck.id)
+    onEdit(deck.id)
   }
 
   return (
@@ -54,7 +56,7 @@ export default function DeckList({ onOpen }: { onOpen: (deckId: string) => void 
       {decks?.length === 0 && <p className="muted empty">No decks yet. Create one above.</p>}
       <ul className="list">
         {decks?.map((deck) => (
-          <DeckRow key={deck.id} deck={deck} onOpen={() => onOpen(deck.id)} />
+          <DeckRow key={deck.id} deck={deck} onStudy={() => onStudy(deck.id)} onEdit={() => onEdit(deck.id)} />
         ))}
       </ul>
     </>
