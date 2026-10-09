@@ -165,8 +165,14 @@ textarea {
   gap: 8px;
 }
 
+.deck-item {
+  display: flex;
+  gap: 8px;
+}
+
 .deck-row {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -285,4 +291,41 @@ textarea {
   padding: 4px 8px;
   opacity: 0.6;
   cursor: pointer;
+}
+
+.study {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.study__prompt {
+  margin: 0;
+  font-size: 1.4rem;
+  line-height: 1.4;
+}
+
+.study__text {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.study__expected {
+  font-size: 1.2rem;
+}
+
+.study__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.study__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.study__actions .btn {
+  flex: 1;
 }
