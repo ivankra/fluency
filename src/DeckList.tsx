@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { addDeck, countDueCards, listDecks, type Deck } from './db'
 import { exportBackupJson } from './exportFile'
+import { getLlmApiKey, loadLlmSettings } from './llm'
 import { href } from './route'
 
 // Tapping the row starts studying; Edit opens the deck's cards.
@@ -17,6 +18,42 @@ function DeckRow({ deck }: { deck: Deck }) {
         Edit
       </a>
     </li>
+  )
+}
+
+const SETUP_DISMISSED_KEY = 'fluency:llm-setup-dismissed'
+
+// Shown until an API key is set or the user dismisses it.
+function SetupCard() {
+  const [visible, setVisible] = useState(() => {
+    try {
+      if (localStorage.getItem(SETUP_DISMISSED_KEY)) return false
+    } catch {
+      // Storage unavailable: show the card.
+    }
+    return !getLlmApiKey(loadLlmSettings().baseUrl)
+  })
+  if (!visible) return null
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem(SETUP_DISMISSED_KEY, '1')
+    } catch {
+      // Not remembered; the card returns next time.
+    }
+    setVisible(false)
+  }
+
+  return (
+    <div className="panel setup-card">
+      <span className="setup-card__text">Get feedback on your translations: set up LLM grading.</span>
+      <a className="btn btn--small btn--primary" href={href.settings}>
+        Set up
+      </a>
+      <button className="btn btn--small" onClick={dismiss} aria-label="Dismiss">
+        ×
+      </button>
+    </div>
   )
 }
 
@@ -45,7 +82,12 @@ export default function DeckList() {
         <button className="btn btn--small" onClick={exportBackupJson}>
           Export all
         </button>
+        <a className="btn btn--small" href={href.settings} aria-label="Settings" title="Settings">
+          ⚙︎
+        </a>
       </header>
+
+      <SetupCard />
 
       {creating && (
         <form className="inline-form" onSubmit={create}>

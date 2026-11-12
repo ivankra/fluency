@@ -4,10 +4,11 @@ Sentence-drill PWA for intermediate and advanced learners: the app shows a sente
 the user's language, they translate it into the target language, grade themselves, and a
 spaced-repetition scheduler decides when the card returns. It targets language
 *production*, as a complement to Anki. There is no backend: everything lives in the
-browser. Setup, commands and the file map are in [README.md](README.md).
+browser. Setup, commands and the file map are in [README.md](../README.md).
 
 Status: the basic loop, scheduling, storage, card editing/export and sample decks are
-done. LLM grading, voice, Drive sync and FSRS are not.
+done, as are the LLM provider settings. LLM grading, voice, Drive sync and FSRS are
+not; LLM grading is designed in [llm-grading.md](llm-grading.md).
 
 ## Architecture
 
@@ -84,9 +85,10 @@ back/forward work and no server configuration is needed. Navigation is plain
 
 | Route | Screen |
 |---|---|
-| `#/` | `DeckList`: decks with live due counts. Tapping a deck starts studying; Edit opens it. Create deck, export everything. |
+| `#/` | `DeckList`: decks with live due counts. Tapping a deck starts studying; Edit opens it. Create deck, export everything, open settings. Until an API key is set, a dismissible card links to settings. |
 | `#/study/<deckId>` | `Study`: the session. |
 | `#/edit/<deckId>` | `DeckView`: add/edit/delete cards, per-card stats (bad/fair/good counts, time until due), rename, CSV export, delete deck. |
+| `#/settings` | `Settings`: LLM provider (OpenRouter or a custom OpenAI-compatible URL), model, API key, Test connection. |
 
 A route to a deleted deck renders "no longer exists" in the editor and "nothing due" in
 study, so stale history entries don't crash.
@@ -180,3 +182,23 @@ A card with `interval = 0` is **new or relearning**; otherwise it is a **review*
   user deletes them, and an empty-database check stops it touching existing data.
 - Per-deck export is CSV (`front,back`, with a UTF-8 BOM so Excel reads CJK). "Export
   all" downloads the JSON backup. Both use a Blob and `<a download>` (`exportFile.ts`).
+
+## LLM settings
+
+`src/llm.ts` and `src/Settings.tsx`. Grading itself is designed in
+[llm-grading.md](llm-grading.md).
+
+- The provider is OpenRouter or a custom OpenAI-compatible base URL, plus a model
+  name. Both are kept in `localStorage` (`fluency:llm`), not in IndexedDB, so they
+  are not part of the JSON backup.
+- The API key is stored together with the normalized base URL it was entered for
+  (`fluency:llm-key`), and `getLlmApiKey(url)` returns it only for that URL, so
+  switching providers can't send it to another server. Changing the provider in the
+  form empties the key field. "Remember the key on this device" (on by default)
+  decides between `localStorage` and memory for the current app session.
+- `fetchChatCompletion` makes one `POST {baseUrl}/chat/completions` with a 30 s
+  timeout and the caller's abort signal, and turns failures into `LlmError` messages
+  meant for the user (bad key, out of credits, not found, rate limit, network or
+  CORS, empty reply).
+- Test connection sends a tiny "Reply with OK" request with the form's current
+  values, before saving. Editing a field aborts a running test and drops its result.
