@@ -1,4 +1,4 @@
-.PHONY: help install dev build preview typecheck test clean distclean
+.PHONY: help install dev build preview typecheck test eval clean distclean
 
 help: ## Show available targets
 	@grep -E '^[a-z]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -23,6 +23,9 @@ typecheck: node_modules ## Run the TypeScript compiler without emitting
 
 test: node_modules ## Run unit tests
 	npm test
+
+eval: node_modules ## Grading evaluation (paid; needs LLM_API_KEY and LLM_MODELS)
+	npx vitest run --config eval/vitest.config.ts
 
 clean: ## Remove build output
 	rm -rf dist dev-dist

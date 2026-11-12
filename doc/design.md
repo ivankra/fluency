@@ -6,9 +6,9 @@ spaced-repetition scheduler decides when the card returns. It targets language
 *production*, as a complement to Anki. There is no backend: everything lives in the
 browser. Setup, commands and the file map are in [README.md](../README.md).
 
-Status: the basic loop, scheduling, storage, card editing/export and sample decks are
-done, as are the LLM provider settings. LLM grading, voice, Drive sync and FSRS are
-not; LLM grading is designed in [llm-grading.md](llm-grading.md).
+Status: the basic loop, scheduling, storage, card editing/export, sample decks and LLM
+grading are done. Voice, Drive sync and FSRS are not. LLM grading is designed in
+[llm-grading.md](llm-grading.md); this document describes how it fits into the app.
 
 ## Architecture
 
@@ -16,12 +16,14 @@ React 19 + TypeScript + Vite, Dexie for IndexedDB, `vite-plugin-pwa` for the ser
 worker. No router, state, or UI libraries.
 
 ```
-components (DeckList, DeckView, Study)
-   │  reads: useLiveQuery(() => db function)     writes: await db function
-   │
-   ├──▶ src/scheduler.ts   pure: (Sched, Grade, now) → Sched
-   │       (Study calls it, then hands the result to db.ts)
-   ▼
+components (DeckList, DeckView, Settings)       Study
+   │  reads: useLiveQuery(() => db function)      │  renders the Session's state,
+   │  writes: await db function                   │  calls its actions
+   │                                              ▼
+   │                                   src/check.ts  Session: queue, LLM checks, writes
+   │                                     ├──▶ src/scheduler.ts  pure: (Sched, Grade, now) → Sched
+   │                                     ├──▶ src/grader.ts ──▶ src/llm.ts ──▶ provider
+   ▼                                     ▼
 src/db.ts  ── the only module that touches Dexie ──▶ IndexedDB
 ```
 
@@ -36,8 +38,10 @@ src/db.ts  ── the only module that touches Dexie ──▶ IndexedDB
   `db.ts` functions like `recordReview(card, grade, sched)` just persist what the caller
   computed, which keeps the algorithm testable. It isn't fully swappable by replacing
   `scheduler.ts` alone, though; see the coupling notes under Data.
-- **Only `scheduler.ts` has tests** (`make test`, vitest, pure functions). The db layer and
-  components are untested.
+- **Tests** (`make test`, vitest) cover the scheduler, the grader's prompt and
+  validation, the API key handling in `llm.ts`, and the study `Session` with its I/O
+  mocked. The db layer and components are untested; `make eval` (paid, manual) checks
+  grading quality against real models.
 - Styling is one global `src/index.css` using CSS variables, with a dark theme through
   `prefers-color-scheme`. Layout is a single 640px column, phone first.
 
@@ -47,9 +51,9 @@ IndexedDB database `fluency` (`src/db.ts`), schema version 1:
 
 | Table | Indexes | Notes |
 |---|---|---|
-| `decks` | `id` | `name`, `updatedAt` |
+| `decks` | `id` | `name`, optional `sourceLanguage`/`targetLanguage` (BCP 47 tags, needed for LLM grading), `updatedAt` |
 | `cards` | `id`, `deckId`, `[deckId+sched.due]` | `front` (native, the prompt), `back` (target, the expected answer), `sched`, `updatedAt` |
-| `reviews` | `id`, `cardId`, `at` | one graded attempt: `grade` (1 bad, 2 fair, 3 good), optional typed `answer` |
+| `reviews` | `id`, `cardId`, `at` | one graded attempt: `grade` (1 bad, 2 fair, 3 good, the user's final say), optional typed `answer`, optional `assessment` (the LLM's grade and feedback, with the model, prompt version and graded input) |
 
 - Ids are UUIDs. Cards and decks carry `updatedAt`, set by every write, for the planned
   Drive sync. Reviews are immutable once written and have no `updatedAt`, but they can
@@ -59,7 +63,7 @@ IndexedDB database `fluency` (`src/db.ts`), schema version 1:
   directly; this is what makes "due cards in a deck" a single range query.
 - Replacing the algorithm (e.g. FSRS) touches more than `scheduler.ts`: `newSched()` in
   `db.ts` builds the SM-2 defaults for new cards, queries and the UI depend on
-  `sched.due`, and `Study` reads `interval === 0` to decide whether a failed card is
+  `sched.due`, and `check.ts` reads `interval === 0` to decide whether a failed card is
   requeued. Existing stored `sched` objects also need converting.
 - Schema changes need a new `db.version(n)` block listing only the indexed fields.
   Adding or changing non-indexed fields needs no version bump, but existing records keep
@@ -87,26 +91,40 @@ back/forward work and no server configuration is needed. Navigation is plain
 |---|---|
 | `#/` | `DeckList`: decks with live due counts. Tapping a deck starts studying; Edit opens it. Create deck, export everything, open settings. Until an API key is set, a dismissible card links to settings. |
 | `#/study/<deckId>` | `Study`: the session. |
-| `#/edit/<deckId>` | `DeckView`: add/edit/delete cards, per-card stats (bad/fair/good counts, time until due), rename, CSV export, delete deck. |
-| `#/settings` | `Settings`: LLM provider (OpenRouter or a custom OpenAI-compatible URL), model, API key, Test connection. |
+| `#/edit/<deckId>` | `DeckView`: add/edit/delete cards, per-card stats (bad/fair/good counts, time until due), rename, deck languages, CSV export, delete deck. |
+| `#/settings` | `Settings`: LLM grading on/off, provider (OpenRouter or a custom OpenAI-compatible URL), model, API key, feedback language, grading rules, Test connection. |
 
 A route to a deleted deck renders "no longer exists" in the editor and "nothing due" in
 study, so stale history entries don't crash.
 
 ## Study loop
 
-`src/Study.tsx`. On entry it loads a snapshot of up to 20 due cards into a queue, so the
-order doesn't shift while the user works. The queue is never topped up: "Done!" means
+`src/Study.tsx` renders a `Session` (`src/check.ts`), which owns the queue, the LLM
+checks and every database write, and is tested without React. On entry it loads a
+snapshot of up to 20 due cards into a queue, so the order doesn't shift while the user
+works. The queue is never topped up: "Done!" means
 this queue is finished, and more cards may still be due. Leaving and re-entering builds
 a fresh queue. Two open tabs or sessions are not reconciled with each other.
 
-Each queue entry is a `Slot`: the card plus what the user has typed and whether the
-answer is revealed. For each card:
+Each queue entry is a `Slot`: a stable key, the card, what the user has typed, whether
+the answer is revealed, and the state of its LLM check. For each card:
 
 1. Show `front`; the user types a translation (optional) and presses Enter.
-2. Reveal `back` next to the typed answer.
-3. The user self-rates Bad / Fair / Good. `recordReview` logs the review and replaces
-   `sched` with `schedule(...)` in one transaction.
+2. The answer is frozen and `back` is revealed at once as the reference translation.
+   If LLM grading is set up for the deck and the answer isn't empty, a check starts
+   (only automatically when the browser reports being online); the feedback panel
+   (`Feedback.tsx`) shows "Checking…", then the summary, the corrected sentence,
+   errors and suggestions, and highlights the suggested grade. A failed check shows
+   the error with Retry; an idle check (offline, aborted) offers "Check answer".
+3. The user accepts the suggestion or grades Bad / Fair / Good themselves.
+   `recordReview` logs the review (with the assessment, if the check finished) and
+   replaces `sched` with `schedule(...)` in one transaction. The next card appears
+   only after the write succeeds; a failed write keeps the card and its feedback and
+   shows "Couldn't save. Try again."
+
+Grading, skipping, undoing or leaving while a check is pending aborts it, and a reply
+that arrives anyway is ignored (checks carry a request id). Nothing calls the LLM
+automatically except the submit.
 
 **Skip** hides the card for 3 days (`skip()` in the scheduler) without a review, and
 leaves ease, interval and counters alone. Available before and after the reveal.
@@ -119,20 +137,22 @@ reaches it.
 **Undo** steps back one attempt, repeatedly, for the current session. A history stack
 holds each attempt's card (with its old schedule) and review id; undoing runs
 `undoAttempt` (delete the review, restore the schedule), removes any retry copy it
-queued, and moves back one slot. Typed text survives because it lives on the `Slot`;
-a removed retry slot is parked so its text returns if the card fails again. History
+queued, and moves back one slot. Typed text and finished feedback survive because they
+live on the `Slot`, so undo makes no new request; a removed retry slot is parked so its
+text returns if the card fails again. History
 is lost when the user leaves the screen; the database changes stay. Undo restores the
 saved schedule as it was, without checking for changes made in between (e.g. from
 another tab).
 
 **Keyboard.** Enter reveals. After that no text field is focused, so 1/2/3 grade
-(Bad/Fair/Good), Space grades Good, `-` skips (Anki's bury key) and Ctrl/Cmd+Z undoes.
-Handlers ignore keys while a textarea/input is focused (so Ctrl+Z is still text undo
-there), and ignore Enter that confirms an IME composition (CJK input). A `busy` flag
-blocks double taps while a write is in flight.
+(Bad/Fair/Good), Space or Enter accept the suggested grade (Good without one, nothing
+while checking), `-` skips (Anki's bury key) and Ctrl/Cmd+Z undoes. Handlers ignore
+keys while a textarea/input is focused (so Ctrl+Z is still text undo there) or a
+button has focus, and ignore Enter that confirms an IME composition (CJK input). The
+session allows one database write at a time, which blocks double taps.
 
-Cards can be edited from the session; the change is applied to every queued copy. A
-failed database write in the session is not reported to the user.
+Cards can be edited from the session; the change is applied to every queued copy, and
+their checks are reset (checking again is explicit).
 
 ## Scheduling
 
@@ -183,14 +203,19 @@ A card with `interval = 0` is **new or relearning**; otherwise it is a **review*
 - Per-deck export is CSV (`front,back`, with a UTF-8 BOM so Excel reads CJK). "Export
   all" downloads the JSON backup. Both use a Blob and `<a download>` (`exportFile.ts`).
 
-## LLM settings
+## LLM grading and settings
 
-`src/llm.ts` and `src/Settings.tsx`. Grading itself is designed in
-[llm-grading.md](llm-grading.md).
+`src/llm.ts` (provider, key, request), `src/grader.ts` (prompt, response schema,
+validation), `src/check.ts` (session), `src/Settings.tsx`. The full design, including
+the prompt and the evaluation, is in [llm-grading.md](llm-grading.md).
 
-- The provider is OpenRouter or a custom OpenAI-compatible base URL, plus a model
-  name. Both are kept in `localStorage` (`fluency:llm`), not in IndexedDB, so they
-  are not part of the JSON backup.
+- Settings: grading on/off, the provider (OpenRouter or a custom OpenAI-compatible
+  base URL), model, feedback language and the user-editable grading rules. They are
+  kept in `localStorage` (`fluency:llm`), not in IndexedDB, so they are not part of
+  the JSON backup. Grading rules are stored empty while equal to the default.
+- Grading a deck needs both deck languages. `DeckView` sets them with
+  `LanguagePicker` (common languages by name, or any BCP 47 tag); the first-run
+  card on the deck list links to settings while grading is on and no key is set.
 - The API key is stored together with the normalized base URL it was entered for
   (`fluency:llm-key`), and `getLlmApiKey(url)` returns it only for that URL, so
   switching providers can't send it to another server. Changing the provider in the
@@ -199,6 +224,9 @@ A card with `interval = 0` is **new or relearning**; otherwise it is a **review*
 - `fetchChatCompletion` makes one `POST {baseUrl}/chat/completions` with a 30 s
   timeout and the caller's abort signal, and turns failures into `LlmError` messages
   meant for the user (bad key, out of credits, not found, rate limit, network or
-  CORS, empty reply).
-- Test connection sends a tiny "Reply with OK" request with the form's current
-  values, before saving. Editing a field aborts a running test and drops its result.
+  CORS, empty, truncated or refused reply). Errors of kind `auth` link to settings.
+- The grader asks for structured JSON output and validates it strictly: a missing or
+  invalid field rejects the reply instead of being filled in.
+- Test connection grades a fixed example through the real grading path with the
+  form's current values, before saving, which also checks that the model supports
+  structured output. Editing a field aborts a running test and drops its result.

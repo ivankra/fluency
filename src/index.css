@@ -447,3 +447,43 @@ select {
 .card-form p {
   margin: 0;
 }
+
+.btn--suggested {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.feedback__summary,
+.feedback__status,
+.feedback__error {
+  margin: 0;
+}
+
+.feedback__error {
+  color: var(--danger);
+}
+
+.feedback__items {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.feedback__kind {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.card-form select {
+  width: 100%;
+}
+
+.card-form input[aria-invalid='true'] {
+  border-color: var(--danger);
+}

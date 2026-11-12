@@ -31,7 +31,8 @@ function SetupCard() {
     } catch {
       // Storage unavailable: show the card.
     }
-    return !getLlmApiKey(loadLlmSettings().baseUrl)
+    const settings = loadLlmSettings()
+    return settings.enabled && !getLlmApiKey(settings.baseUrl)
   })
   if (!visible) return null
 

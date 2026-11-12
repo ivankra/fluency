@@ -4,3 +4,4 @@ dev-dist
 *.local
 *.tsbuildinfo
 *.pdf
+eval/results
