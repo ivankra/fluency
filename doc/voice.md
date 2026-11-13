@@ -84,7 +84,13 @@ What we know before the spike:
 ### Spike
 
 The work starts with a spike on the three platforms. The results are written into
-this section and may change the decisions above:
+this section and may change the decisions above.
+
+**Status: not run yet.** It needs real Android and iOS devices. The implementation
+follows the defaults in this doc (`continuous: false`, the timeouts in `speech.ts`), so
+the spike is a manual test of the app itself.
+
+Questions:
 
 1. iOS: confirm recognition still doesn't work in the home-screen app on current iOS.
    In Safari, does each `start()` or `speak()` need a user gesture, or only the first?
@@ -100,6 +106,8 @@ this section and may change the decisions above:
    whether iOS turns the volume down after recording.
 6. Screen Wake Lock in the installed app on Android (iOS home-screen apps have it since
    iOS 18.4).
+7. Priming: does the recognizer's `start` event come only after the permission dialogs
+   are answered on every platform? If not, prime on `audiostart` instead.
 
 ## Architecture
 
@@ -144,7 +152,12 @@ export interface Listening {
   result: Promise<{ text: string; alternatives: string[] }>
   finish(): void
 }
-export function listen(options: { lang: string; signal: AbortSignal; onInterim?: (text: string) => void }): Listening
+export function listen(options: {
+  lang: string
+  signal: AbortSignal
+  onInterim?: (text: string) => void
+  onStart?: () => void              // listening has begun: permissions are granted
+}): Listening
 
 // Unlock speech and ask for the mic from inside a tap handler (see Hands-free).
 export function primeFromGesture(lang: string): Promise<void>
@@ -240,12 +253,13 @@ export interface HandsFreeDeps {
   keepAwake(): () => void   // Screen Wake Lock; returns release
 }
 
-export type HandsFreePhase = 'off' | 'speaking' | 'listening-answer' | 'waiting' | 'listening-command' | 'paused'
+export type HandsFreePhase =
+  'off' | 'starting' | 'speaking' | 'listening-answer' | 'waiting' | 'listening-command' | 'paused'
 export interface HandsFreeState { phase: HandsFreePhase; interim: string; message: string | null }
 
 export class HandsFree {
   subscribe, getState      // like Session, for useSyncExternalStore
-  start()                  // call from a tap, after primeFromGesture
+  start(prime?: () => Promise<void>)   // call from a tap; prime = primeFromGesture
   stop()
   dispose()
 }
@@ -257,8 +271,11 @@ export function parseCommand(alternatives: string[]): Command | null   // pure, 
 **Start and Resume** run inside the tap handler. The voices are already loaded (Study
 calls `voicesReady()` when it mounts). `primeFromGesture` synchronously speaks a silent
 utterance, which unlocks speech on iOS. It then starts a recognizer and aborts it on
-`audiostart`, so any permission dialogs appear now, while the user is looking. Only
-then does the loop start. A permission error pauses with its message.
+its `start` event, so any permission dialogs appear now, while the user is looking.
+`HandsFree.start(prime)` calls it synchronously and shows the `starting` phase meanwhile.
+Only then does the loop start, and only if nothing stopped it in between (Stop, leaving
+the screen, opening the editor). A second tap while starting is ignored. A permission
+error pauses with its message; being cut off by another speech operation is not success.
 
 The loop works on `session.current`, one pass at a time:
 
@@ -401,8 +418,8 @@ spelling and punctuation, plus the smallest edits that fix any errors.
     submitting before the final text has arrived: a revealed answer can't be changed,
     so a late result couldn't fix it.
   - Skip, opening the editor or leaving the screen discard it.
-  - It is hidden where `canListen()` is false; in iOS home-screen apps a note says the
-    keyboard's dictation key still works.
+  - It is hidden where `canListen()` is false. Settings explains why; for iOS
+    home-screen apps it says the keyboard's dictation key still works.
 - **Hands-free:** a header button that starts the loop. While it runs, a status line
   shows the phase ("Listening for your answer…", "Say good, fair, bad, skip or
   repeat"), the text being recognized, and Stop or Resume. The manual speaker and mic
@@ -410,8 +427,9 @@ spelling and punctuation, plus the smallest edits that fix any errors.
   keyboard stays closed.
 - **Requirements:** voice needs the deck's languages: the target for listening and
   reading the reference, the source for reading the prompt. Without them the voice
-  controls point to "Edit deck", like the grading hint does. LLM grading is not
-  required: without it, the user grades themselves after hearing the reference.
+  controls simply don't appear; the sample decks have languages, and the deck editor
+  sets them. LLM grading is not required: without it, the user grades themselves
+  after hearing the reference.
 - **Privacy note on first use:** the first time the user taps the mic or Hands-free, a
   line under the controls says the browser's speech service may receive the audio. It
   stays until dismissed (`privacyNoteSeen`).

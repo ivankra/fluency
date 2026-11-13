@@ -1,4 +1,5 @@
 // LLM provider settings, the API key, and one OpenAI-compatible chat request.
+import { readStored, writeStored } from './storage'
 
 export const OPENROUTER_URL = 'https://openrouter.ai/api/v1'
 export const DEFAULT_MODEL = 'google/gemini-2.5-flash' // placeholder until the evaluation picks one
@@ -41,25 +42,6 @@ export interface ChatCompletion {
 const SETTINGS_KEY = 'fluency:llm'
 const API_KEY_KEY = 'fluency:llm-key'
 const TIMEOUT_MS = 30_000
-
-// localStorage can be unavailable or throw (private mode); treat that as "nothing stored".
-function readStored(key: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? 'null')
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null
-  } catch {
-    return null
-  }
-}
-
-function writeStored(key: string, value: object | null) {
-  try {
-    if (value) localStorage.setItem(key, JSON.stringify(value))
-    else localStorage.removeItem(key)
-  } catch {
-    // Not persisted; in-memory state still applies.
-  }
-}
 
 // `https://Example.com/v1/` → `https://example.com/v1`; null if not an http(s) URL.
 export function normalizeBaseUrl(url: string): string | null {

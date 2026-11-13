@@ -12,6 +12,7 @@ import {
   setLlmApiKey,
 } from './llm'
 import { href } from './route'
+import { canListen, canSpeak, isIosHomeScreenApp, loadVoiceSettings, PRIVACY_NOTE, RATES, saveVoiceSettings } from './speech'
 
 const MAX_RULES_LENGTH = 1000
 
@@ -23,6 +24,43 @@ const TEST_EXAMPLE = {
   source: 'I would like a coffee, please.',
   reference: 'Quisiera un café, por favor.',
   answer: 'Quiero un cafe por favor.',
+}
+
+// What this browser offers, so the user doesn't have to guess.
+function voiceAvailability(): string {
+  if (!canSpeak()) return "This browser can't read aloud or recognize speech."
+  if (isIosHomeScreenApp()) {
+    return "Speech recognition isn't available in the installed app on iOS; the keyboard's dictation key still works. Reading aloud works."
+  }
+  if (!canListen()) return "This browser can't recognize speech; reading aloud works."
+  return 'Reading aloud and speaking answers are available. On iOS, speaking needs Siri & Dictation turned on.'
+}
+
+// Saved on change: there is nothing to test first.
+function VoiceSettings() {
+  const [settings, setSettings] = useState(loadVoiceSettings)
+  const changeRate = (rate: number) => {
+    const next = { ...settings, rate }
+    saveVoiceSettings(next)
+    setSettings(next)
+  }
+  return (
+    <section className="panel card-form">
+      <h2>Voice</h2>
+      <p className="muted">{voiceAvailability()}</p>
+      <label>
+        <span>Speech rate for the language you're learning</span>
+        <select value={settings.rate} onChange={(event) => changeRate(Number(event.target.value))}>
+          {RATES.map(({ rate, label }) => (
+            <option key={rate} value={rate}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="muted">{PRIVACY_NOTE}</p>
+    </section>
+  )
 }
 
 export default function Settings() {
@@ -188,6 +226,7 @@ export default function Settings() {
           </button>
         </div>
       </form>
+      <VoiceSettings />
     </>
   )
 }

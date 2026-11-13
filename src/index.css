@@ -487,3 +487,30 @@ select {
 .card-form input[aria-invalid='true'] {
   border-color: var(--danger);
 }
+
+/* Small icon button, inline with text (read aloud). */
+.btn--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+.study__interim {
+  margin: 0;
+  font-style: italic;
+}
+
+.hands-free {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hands-free__text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

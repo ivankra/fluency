@@ -2,7 +2,7 @@
 // Plain code with its I/O injected, so it is tested without React (check.test.ts);
 // the Study screen only renders its state and calls its actions.
 import type { Card, Grade, Sched } from './db'
-import { PROMPT_VERSION, type Assessment, type GradingInput, type ReviewAssessment } from './grader'
+import { PROMPT_VERSION, type AnswerMode, type Assessment, type GradingInput, type ReviewAssessment } from './grader'
 import { LlmError } from './llm'
 import { schedule, skip } from './scheduler'
 
@@ -28,6 +28,7 @@ export interface Slot {
   key: number
   card: Card
   answer: string
+  answerMode: AnswerMode // 'spoken' once any part of the answer was dictated
   revealed: boolean
   check: Check
 }
@@ -68,7 +69,12 @@ export interface SessionDeps {
   grader(): Grader | null
   isOnline(): boolean
   now(): number
-  recordReview(card: Card, grade: Grade, sched: Sched, extra: { answer?: string; assessment?: ReviewAssessment }): Promise<string>
+  recordReview(
+    card: Card,
+    grade: Grade,
+    sched: Sched,
+    extra: { answer?: string; answerMode?: AnswerMode; assessment?: ReviewAssessment },
+  ): Promise<string>
   skipCard(card: Card, sched: Sched): Promise<unknown>
   undoAttempt(cardId: string, sched: Sched, reviewId?: string): Promise<unknown>
   editCard(id: string, front: string, back: string): Promise<unknown>
@@ -131,16 +137,21 @@ export class Session {
     if (this.state.queue) this.set({ queue: this.state.queue.map(this.cancel) })
   }
 
-  setAnswer(answer: string) {
-    const slot = this.current
-    if (slot && !slot.revealed) this.updateSlot(slot.key, (current) => ({ ...current, answer }))
+  // A spoken answer stays spoken through later edits (fixing recognition errors), until
+  // the field is cleared. With `key`, applies only if that slot is still the current
+  // one, so a late transcript can't land on the next card.
+  setAnswer(answer: string, mode: AnswerMode = 'typed', key?: number) {
+    const slot = this.answerable(key)
+    if (!slot) return
+    const answerMode = !answer.trim() ? 'typed' : mode === 'spoken' ? 'spoken' : slot.answerMode
+    this.updateSlot(slot.key, (current) => ({ ...current, answer, answerMode }))
   }
 
   // Freeze the answer and reveal the reference; check it if possible. Offline, the
-  // automatic check is skipped, but an explicit check() still works.
-  submit() {
-    const slot = this.current
-    if (!slot || slot.revealed) return
+  // automatic check is skipped, but an explicit check() still works. `key` as in setAnswer.
+  submit(key?: number) {
+    const slot = this.answerable(key)
+    if (!slot) return
     this.updateSlot(slot.key, (current) => ({ ...current, revealed: true }))
     if (this.deps.isOnline()) this.check()
   }
@@ -156,7 +167,13 @@ export class Session {
       id: this.nextRequestId++,
       model: grader.model,
       promptVersion: PROMPT_VERSION,
-      input: { ...grader.context, source: slot.card.front, reference: slot.card.back, answer: slot.answer.trim() },
+      input: {
+        ...grader.context,
+        source: slot.card.front,
+        reference: slot.card.back,
+        answer: slot.answer.trim(),
+        ...(slot.answerMode === 'spoken' && { answerMode: 'spoken' as const }),
+      },
     }
     const controller = new AbortController()
     this.requests.set(request.id, controller)
@@ -174,10 +191,11 @@ export class Session {
       .finally(() => this.requests.delete(request.id))
   }
 
-  // Grade the current card; grading while a check is pending cancels it.
-  async grade(grade: Grade) {
+  // Grade the current card; grading while a check is pending cancels it. Like skip()
+  // and undo(), resolves to true only if the write was made.
+  async grade(grade: Grade): Promise<boolean> {
     const slot = this.current
-    if (!slot || this.state.writing) return
+    if (!slot || this.state.writing) return false
     const { check } = slot
     const assessment: ReviewAssessment | undefined =
       check.status === 'done'
@@ -193,9 +211,11 @@ export class Session {
     const card = slot.card
     const sched = schedule(card.sched, grade, this.deps.now())
 
-    await this.write(async () => {
+    const answer = slot.answer.trim() || undefined
+    return this.write(async () => {
       const reviewId = await this.deps.recordReview(card, grade, sched, {
-        answer: slot.answer.trim() || undefined,
+        answer,
+        ...(answer && slot.answerMode === 'spoken' && { answerMode: 'spoken' as const }),
         assessment,
       })
       // interval 0 means the card is back to (re)learning: show it again this session.
@@ -218,16 +238,16 @@ export class Session {
   }
 
   // Accept the LLM's suggested grade.
-  accept() {
+  async accept(): Promise<boolean> {
     const check = this.current?.check
-    if (check?.status === 'done') return this.grade(check.assessment.grade)
+    return check?.status === 'done' ? this.grade(check.assessment.grade) : false
   }
 
-  async skip() {
+  async skip(): Promise<boolean> {
     const slot = this.current
-    if (!slot || this.state.writing) return
+    if (!slot || this.state.writing) return false
     this.updateSlot(slot.key, this.cancel)
-    await this.write(async () => {
+    return this.write(async () => {
       await this.deps.skipCard(slot.card, skip(slot.card.sched, this.deps.now()))
       this.set({ history: [...this.state.history, { card: slot.card }], index: this.state.index + 1 })
     })
@@ -235,10 +255,10 @@ export class Session {
 
   // Step back one attempt: restore the card's schedule, drop its review and retry copy.
   // The previous slot comes back as it was, feedback included, without a new request.
-  async undo() {
+  async undo(): Promise<boolean> {
     const last = this.state.history.at(-1)
-    if (!last || this.state.writing) return
-    await this.write(async () => {
+    if (!last || this.state.writing) return false
+    return this.write(async () => {
       await this.deps.undoAttempt(last.card.id, last.card.sched, last.reviewId)
       const { index } = this.state
       let queue = this.state.queue!.map((slot, position) => (position === index ? this.cancel(slot) : slot))
@@ -271,7 +291,13 @@ export class Session {
   // --- internals ---
 
   private newSlot(card: Card): Slot {
-    return { key: this.nextKey++, card, answer: '', revealed: false, check: IDLE }
+    return { key: this.nextKey++, card, answer: '', answerMode: 'typed', revealed: false, check: IDLE }
+  }
+
+  // The current slot if it still takes an answer (and is the slot `key`, if given).
+  private answerable(key?: number): Slot | undefined {
+    const slot = this.current
+    return slot && !slot.revealed && (key === undefined || slot.key === key) ? slot : undefined
   }
 
   private set(patch: Partial<SessionState>) {
