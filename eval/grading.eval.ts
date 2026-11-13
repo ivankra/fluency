@@ -60,7 +60,12 @@ test('grading evaluation', { timeout: 0 }, async () => {
   const results: Result[] = []
   for (const model of models) {
     for (const testCase of cases) {
-      const input = { ...testCase, feedbackLanguage: 'en', gradingRules: testCase.gradingRules ?? '' }
+      const input = {
+        ...testCase,
+        feedbackLanguage: 'en',
+        gradingRules: testCase.gradingRules ?? '',
+        answerMode: testCase.answerMode === 'spoken' ? ('spoken' as const) : undefined,
+      }
       const settings = { baseUrl: env.LLM_BASE_URL || OPENROUTER_URL, model }
       const start = performance.now()
       try {
@@ -80,6 +85,8 @@ test('grading evaluation', { timeout: 0 }, async () => {
     for (const language of new Set(cases.map((testCase) => testCase.targetLanguage))) {
       rows[`${model} ${language}`] = summarize(modelResults.filter((result) => result.testCase.targetLanguage === language))
     }
+    // Spoken cases in their own row, so a few of them can't hide among the typed ones.
+    rows[`${model} spoken`] = summarize(modelResults.filter((result) => result.testCase.answerMode === 'spoken'))
   }
   console.table(rows)
   for (const miss of results.filter((result) => !agrees(result))) {

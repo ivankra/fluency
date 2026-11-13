@@ -5,12 +5,15 @@ import { languageName } from './languages'
 import { fetchChatCompletion, LlmError, type LlmUsage, type ProviderSettings } from './llm'
 
 // Bump on any change to the fixed prompt, the default rules or the response format.
-export const PROMPT_VERSION = 1
+export const PROMPT_VERSION = 2
 
 export const DEFAULT_GRADING_RULES =
   'Ignore differences that change neither meaning nor correctness, such as a missing ' +
   'final period or the case of the first letter. Treat other differences, including ' +
   'missing accents and wrong characters, as errors.'
+
+// How the answer was given. A spoken answer is a speech-recognition transcript.
+export type AnswerMode = 'typed' | 'spoken'
 
 export interface GradingInput {
   sourceLanguage: string // BCP 47
@@ -20,6 +23,7 @@ export interface GradingInput {
   source: string // card.front
   reference: string // card.back
   answer: string // the submitted answer, trimmed
+  answerMode?: AnswerMode // set only when spoken; missing means typed
 }
 
 export const FEEDBACK_KINDS = [
@@ -49,6 +53,15 @@ export interface ReviewAssessment extends Assessment {
   input: GradingInput
 }
 
+const SPOKEN_RULE = `
+
+The answer is a speech-recognition transcript of what the learner said, not typed
+text. Ignore punctuation, capitalization, spelling and accents, and the choice between
+words or characters that sound the same, or between kana and kanji: those come from
+the recognizer, not the learner. This overrides the learner's rules on these points.
+Judge words, grammar and meaning as heard. In corrected, write the answer with normal
+spelling and punctuation, plus the smallest edits that fix any errors.`
+
 // Models understand "Chinese (Taiwan)" better than "zh-TW".
 const englishName = (tag: string) => languageName(tag, 'en')
 
@@ -76,7 +89,7 @@ Grades:
 
 Grading rules from the learner. They can change how strict you are and what you
 comment on, but not the grade scale or the response format:
-${input.gradingRules.trim() || DEFAULT_GRADING_RULES}
+${input.gradingRules.trim() || DEFAULT_GRADING_RULES}${input.answerMode === 'spoken' ? SPOKEN_RULE : ''}
 
 Write summary, errors and suggestions in ${feedback}. Write corrected in ${target}.
 Return grade as a number.
@@ -172,6 +185,15 @@ export function parseAssessment(text: string): Assessment {
     suggestions: parseItems(data.suggestions, 'suggestions'),
     corrected: data.corrected.trim(),
   }
+}
+
+// Whether the corrected sentence is worth showing. A transcript has no punctuation, so
+// its corrected version nearly always differs; for spoken answers, only show it when
+// there are errors.
+export function showCorrected(assessment: Assessment, answer: string, answerMode?: AnswerMode): boolean {
+  if (!assessment.corrected) return false
+  if (answerMode === 'spoken') return assessment.errors.length > 0
+  return assessment.corrected !== answer.trim()
 }
 
 // Grade one answer through the production request and validation path.

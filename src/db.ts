@@ -3,7 +3,7 @@
 // Every entity has a unique `id` and an `updatedAt` timestamp (ms), so Google Drive
 // sync can detect conflicts now and merge per-entity later.
 import Dexie, { type EntityTable } from 'dexie'
-import type { ReviewAssessment } from './grader'
+import type { AnswerMode, ReviewAssessment } from './grader'
 
 export interface Deck {
   id: string
@@ -45,7 +45,8 @@ export interface Review {
   cardId: string
   at: number
   grade: Grade
-  answer?: string // what the user typed
+  answer?: string // what the user typed or said
+  answerMode?: AnswerMode // set only when spoken; missing means typed
   assessment?: ReviewAssessment // the LLM's suggestion, if it was checked; grade is the user's final say
 }
 
@@ -145,7 +146,7 @@ export const recordReview = (
   card: Card,
   grade: Grade,
   sched: Sched,
-  extra: { answer?: string; assessment?: ReviewAssessment } = {},
+  extra: { answer?: string; answerMode?: AnswerMode; assessment?: ReviewAssessment } = {},
 ) =>
   db.transaction('rw', db.cards, db.reviews, async () => {
     const now = Date.now()

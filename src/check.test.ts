@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { failCheck, invalidateCheck, resolveCheck, Session, startCheck, type CheckRequest, type Grader, type Slot } from './check'
 import { newSched, type Card } from './db'
-import type { Assessment } from './grader'
+import { PROMPT_VERSION, type Assessment } from './grader'
 import { LlmError } from './llm'
 
 const NOW = 1_000_000_000_000
@@ -68,7 +68,7 @@ describe('check transitions', () => {
     promptVersion: 1,
     input: { sourceLanguage: 'en', targetLanguage: 'es', feedbackLanguage: 'en', gradingRules: '', source: 's', reference: 'r', answer: 'a' },
   }
-  const slot: Slot = { key: 1, card: makeCard('a'), answer: 'a', revealed: true, check: { status: 'idle' } }
+  const slot: Slot = { key: 1, card: makeCard('a'), answer: 'a', answerMode: 'typed', revealed: true, check: { status: 'idle' } }
   const pending = startCheck(slot, request)
 
   it('applies a result only to the pending request with the same id', () => {
@@ -122,7 +122,7 @@ describe('Session', () => {
     await grading
     expect(deps.recordReview).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }), 2, expect.anything(), {
       answer: 'mi respuesta',
-      assessment: expect.objectContaining({ grade: 2, model: 'test-model', promptVersion: 1, input: assessCalls[0].input }),
+      assessment: expect.objectContaining({ grade: 2, model: 'test-model', promptVersion: PROMPT_VERSION, input: assessCalls[0].input }),
     })
     expect(session.getState().index).toBe(1)
   })
@@ -239,4 +239,73 @@ describe('Session', () => {
     expect(deps.editCard).toHaveBeenCalledWith('a', 'new front', 'new back')
     expect(current()).toMatchObject({ card: { front: 'new front' }, check: { status: 'idle' } })
   })
+
+  it('tracks a spoken answer through edits, sends it to the grader and stores it with the review', async () => {
+    const { session, deps, assessCalls, writes, current } = setup()
+    session.setAnswer('mi respuesta', 'spoken')
+    session.setAnswer('mi respuesta.') // fixing a recognition error keeps it spoken
+    expect(current().answerMode).toBe('spoken')
+    session.setAnswer('')
+    expect(current().answerMode).toBe('typed')
+    session.setAnswer('hablado', 'spoken')
+    session.submit()
+    expect(assessCalls[0].input).toMatchObject({ answer: 'hablado', answerMode: 'spoken' })
+    const grading = session.grade(3)
+    writes[0].resolve('review-1')
+    await grading
+    expect(deps.recordReview).toHaveBeenCalledWith(expect.anything(), 3, expect.anything(), expect.objectContaining({ answerMode: 'spoken' }))
+  })
+
+  it('leaves answerMode out for typed answers', async () => {
+    const { session, deps, assessCalls, writes, answer } = setup()
+    answer()
+    expect(assessCalls[0].input).not.toHaveProperty('answerMode')
+    const grading = session.grade(3)
+    writes[0].resolve('review-1')
+    await grading
+    expect(deps.recordReview.mock.calls[0]).not.toContainEqual(expect.objectContaining({ answerMode: expect.anything() }))
+  })
+
+  it('new retry copies start typed; a parked copy keeps its mode', async () => {
+    const { session, writes, current, settle } = setup([makeCard('a')])
+    session.setAnswer('x', 'spoken')
+    session.submit()
+    let grading = session.grade(1)
+    writes[0].resolve('review-1')
+    await grading
+    expect(current()).toMatchObject({ answer: '', answerMode: 'typed' })
+    session.setAnswer('otra vez', 'spoken')
+    await session.undo() // parks the retry copy
+    await settle()
+    grading = session.grade(1)
+    writes[1].resolve('review-2')
+    await grading
+    expect(current()).toMatchObject({ answer: 'otra vez', answerMode: 'spoken' })
+  })
+
+  it('ignores an answer or submit meant for another slot', () => {
+    const { session, current } = setup()
+    const key = current().key
+    session.setAnswer('late', 'spoken', key + 100)
+    session.submit(key + 100)
+    expect(current()).toMatchObject({ answer: '', revealed: false })
+    session.setAnswer('on time', 'spoken', key)
+    session.submit(key)
+    expect(current()).toMatchObject({ answer: 'on time', revealed: true })
+  })
+
+  it('grade, skip and undo report whether they wrote', async () => {
+    const { session, deps, writes, answer } = setup()
+    answer()
+    const grading = session.grade(3)
+    expect(await session.skip()).toBe(false)
+    expect(await session.undo()).toBe(false)
+    writes[0].resolve('review-1')
+    expect(await grading).toBe(true)
+    expect(await session.undo()).toBe(true)
+    deps.skipCard.mockRejectedValueOnce(new Error('quota'))
+    expect(await session.skip()).toBe(false)
+    expect(await session.skip()).toBe(true)
+  })
 })
+

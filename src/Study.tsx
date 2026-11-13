@@ -5,10 +5,38 @@ import Feedback from './Feedback'
 import { Session, type Grader } from './check'
 import { GRADES, editCard, getDeck, getDueCards, recordReview, skipCard, undoAttempt, type Deck, type Grade } from './db'
 import { assessAnswer } from './grader'
+import { HandsFree, keepScreenAwake, type HandsFreePhase } from './handsFree'
 import { getLlmApiKey, loadLlmSettings, type LlmSettings } from './llm'
+import { languageName } from './languages'
 import { href } from './route'
+import SpeakButton from './SpeakButton'
+import {
+  canListen,
+  hasVoice,
+  isAbort,
+  listen,
+  loadVoiceSettings,
+  primeFromGesture,
+  PRIVACY_NOTE,
+  recognitionAvailable,
+  saveVoiceSettings,
+  speak,
+  voicesReady,
+} from './speech'
+import { useDictation } from './useDictation'
 
 const GRADE_CLASS: Record<Grade, string> = { 1: 'btn btn--danger', 2: 'btn', 3: 'btn btn--primary' }
+
+const HANDS_FREE_STATUS: Record<Exclude<HandsFreePhase, 'off' | 'paused'>, string> = {
+  starting: 'Starting…',
+  speaking: 'Speaking…',
+  'listening-answer': 'Listening for your answer…',
+  waiting: 'Checking…',
+  'listening-command': 'Say yes, good, fair, bad, skip or repeat.',
+  'listening-undo': 'Say undo to go back.',
+}
+
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 // Grading needs it enabled, an API key, and the deck's languages.
 function makeGrader(settings: LlmSettings, deck: Deck | null | undefined): Grader | null {
@@ -32,6 +60,7 @@ export default function Study({ deckId }: { deckId: string }) {
   deckRef.current = deck
   // Settings only change on the settings screen, so reading them once is enough.
   const [settings] = useState(loadLlmSettings)
+  const [voiceSettings, setVoiceSettings] = useState(loadVoiceSettings)
   const [session] = useState(
     () =>
       new Session({
@@ -44,8 +73,29 @@ export default function Study({ deckId }: { deckId: string }) {
         editCard,
       }),
   )
+  const [handsFree] = useState(
+    () =>
+      new HandsFree({
+        session,
+        languages: () => {
+          const current = deckRef.current
+          return current?.sourceLanguage && current.targetLanguage
+            ? { source: current.sourceLanguage, target: current.targetLanguage, feedback: settings.feedbackLanguage }
+            : null
+        },
+        speak,
+        listen,
+        settings: loadVoiceSettings,
+        keepAwake: keepScreenAwake,
+      }),
+  )
   const { queue, index, history, writing, saveError } = useSyncExternalStore(session.subscribe, session.getState)
+  const handsFreeState = useSyncExternalStore(handsFree.subscribe, handsFree.getState)
   const [editing, setEditing] = useState(false)
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const [privacyNote, setPrivacyNote] = useState(false)
+  const [recognizes, setRecognizes] = useState<boolean | null>(null)
+  const [, setVoicesLoaded] = useState(false)
 
   // The queue is a snapshot taken on entry, so cards don't shuffle while we work.
   useEffect(() => {
@@ -64,9 +114,94 @@ export default function Study({ deckId }: { deckId: string }) {
   const missingLanguages =
     settings.enabled && !!getLlmApiKey(settings.baseUrl) && !!deck && !(deck.sourceLanguage && deck.targetLanguage)
 
+  // --- Voice ---
+
+  const source = deck?.sourceLanguage
+  const target = deck?.targetLanguage
+  const canDictate = canListen() && !!target && recognizes !== false
+  const canHandsFree = canDictate && !!source
+  // Hands-free reads the prompt, the reference, English announcements and, with grading,
+  // the feedback summary, so it needs those voices.
+  const missingVoice = [source, target, 'en-US', canCheck ? settings.feedbackLanguage : undefined].find(
+    (lang) => lang && !hasVoice(lang),
+  )
+  const { phase } = handsFreeState
+  const handsFreeRunning = phase !== 'off' && phase !== 'paused'
+  const hideText = handsFreeRunning && voiceSettings.hideText
+  const dictation = useDictation(session, slot, target, setVoiceError)
+
+  // Voices load asynchronously in Chrome; re-render once they are known.
+  useEffect(() => {
+    voicesReady().then(() => setVoicesLoaded(true))
+  }, [])
+
+  useEffect(() => {
+    let stale = false
+    if (target) recognitionAvailable(target).then((available) => !stale && setRecognizes(available))
+    return () => {
+      stale = true
+    }
+  }, [target])
+
+  // Read the reference on reveal, if set; hands-free reads it itself. Stops with the card.
+  useEffect(() => {
+    if (!slot?.revealed || handsFreeRunning || !voiceSettings.readReference || !target || !hasVoice(target)) return
+    const controller = new AbortController()
+    speak(slot.card.back, target, { rate: voiceSettings.rate, signal: controller.signal }).catch(
+      (error) => !isAbort(error) && setVoiceError(errorMessage(error)),
+    )
+    return () => controller.abort()
+  }, [slot?.key, slot?.revealed]) // only on reveal, not when hands-free stops
+
+  // Hands-free stops when the screen is left, the page is hidden or the editor opens.
+  useEffect(() => {
+    const onVisibility = () => document.hidden && handsFree.stop()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      handsFree.dispose()
+    }
+  }, [handsFree])
+
+  useEffect(() => {
+    if (!editing) return
+    handsFree.stop()
+    dictation.cancel()
+  }, [editing]) // handsFree is stable; dictation.cancel only reads a ref
+
+  // The first use of the mic shows where the audio goes, until dismissed.
+  const notePrivacy = () => {
+    if (!voiceSettings.privacyNoteSeen) setPrivacyNote(true)
+  }
+  const dismissPrivacyNote = () => {
+    const next = { ...voiceSettings, privacyNoteSeen: true }
+    saveVoiceSettings(next)
+    setVoiceSettings(next)
+    setPrivacyNote(false)
+  }
+
+  const startDictation = () => {
+    notePrivacy()
+    setVoiceError(null)
+    dictation.start()
+  }
+
+  // Runs inside the tap: priming unlocks speech on iOS and asks for permissions now.
+  const startHandsFree = () => {
+    if (!target) return
+    notePrivacy()
+    setVoiceError(null)
+    dictation.cancel()
+    handsFree.start(() => primeFromGesture(target))
+  }
+
+  // --- Answer and keyboard ---
+
+  // While dictating, Enter only finishes it; the user checks the text and submits.
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    session.submit()
+    if (dictation.dictating) dictation.finish()
+    else session.submit()
   }
 
   // Enter submits; Shift+Enter adds a newline. Enter that confirms an IME composition
@@ -110,6 +245,7 @@ export default function Study({ deckId }: { deckId: string }) {
 
   if (!queue) return null
   const card = slot?.card
+  const showVoiceError = (message: string) => setVoiceError(message)
 
   return (
     <>
@@ -126,7 +262,43 @@ export default function Study({ deckId }: { deckId: string }) {
             Edit card
           </button>
         )}
+        {card && canHandsFree && phase === 'off' && !editing && (
+          <button
+            className="btn btn--small"
+            onClick={startHandsFree}
+            disabled={!!missingVoice}
+            title={missingVoice && `No ${languageName(missingVoice)} voice on this device`}
+          >
+            Hands-free
+          </button>
+        )}
       </header>
+
+      {phase !== 'off' && (
+        <div className="panel hands-free" role="status">
+          <span className="hands-free__text">
+            {phase === 'paused' ? handsFreeState.message || 'Paused.' : HANDS_FREE_STATUS[phase]}
+            {handsFreeState.interim && <span className="muted"> “{handsFreeState.interim}”</span>}
+          </span>
+          {phase === 'paused' && (
+            <button className="btn btn--small btn--primary" onClick={startHandsFree}>
+              Resume
+            </button>
+          )}
+          <button className="btn btn--small" onClick={() => handsFree.stop()}>
+            Stop
+          </button>
+        </div>
+      )}
+
+      {privacyNote && (
+        <div className="panel setup-card">
+          <span className="setup-card__text muted">{PRIVACY_NOTE}</span>
+          <button className="btn btn--small" onClick={dismissPrivacyNote} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
 
       {!slot || !card ? (
         <p className="muted empty">{queue.length ? 'Done!' : 'Nothing due right now.'}</p>
@@ -143,7 +315,12 @@ export default function Study({ deckId }: { deckId: string }) {
         </section>
       ) : (
         <section className="panel study">
-          <p className="study__prompt">{card.front}</p>
+          <p className="study__prompt">
+            {hideText ? <span className="muted">Listen…</span> : card.front}{' '}
+            {!handsFreeRunning && !dictation.dictating && (
+              <SpeakButton text={card.front} lang={source} rate={voiceSettings.otherRate} onError={showVoiceError} />
+            )}
+          </p>
 
           {slot.revealed ? (
             <>
@@ -153,6 +330,13 @@ export default function Study({ deckId }: { deckId: string }) {
                 missingLanguages={missingLanguages}
                 deckId={deckId}
                 onCheck={() => session.check()}
+                voice={
+                  handsFreeRunning
+                    ? null
+                    : { target, feedback: settings.feedbackLanguage, rate: voiceSettings.rate, otherRate: voiceSettings.otherRate }
+                }
+                hideReference={hideText}
+                onVoiceError={showVoiceError}
               />
               <div className="study__actions">
                 {[...GRADES].reverse().map(({ grade, label }) => (
@@ -179,12 +363,22 @@ export default function Study({ deckId }: { deckId: string }) {
                 rows={3}
                 placeholder="Translate into the target language…"
                 aria-label="Your translation"
-                autoFocus
+                autoFocus={phase === 'off'}
               />
+              {dictation.dictating && <p className="muted study__interim">{dictation.interim || 'Listening…'}</p>}
               <div className="study__actions">
                 <button className="btn btn--primary">
                   Show answer <kbd>Enter</kbd>
                 </button>
+                {canDictate && !handsFreeRunning && (
+                  <button
+                    type="button"
+                    className={dictation.dictating ? 'btn btn--suggested' : 'btn'}
+                    onClick={dictation.dictating ? dictation.finish : startDictation}
+                  >
+                    {dictation.dictating ? 'Stop' : 'Speak'}
+                  </button>
+                )}
                 <button type="button" className="btn" disabled={writing} onClick={() => session.skip()}>
                   Skip
                 </button>
@@ -194,6 +388,7 @@ export default function Study({ deckId }: { deckId: string }) {
         </section>
       )}
       {saveError && <p className="feedback__error">{saveError}</p>}
+      {voiceError && <p className="feedback__error">{voiceError}</p>}
     </>
   )
 }

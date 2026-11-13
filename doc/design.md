@@ -6,9 +6,10 @@ spaced-repetition scheduler decides when the card returns. It targets language
 *production*, as a complement to Anki. There is no backend: everything lives in the
 browser. Setup, commands and the file map are in [README.md](../README.md).
 
-Status: the basic loop, scheduling, storage, card editing/export, sample decks and LLM
-grading are done. Voice, Drive sync and FSRS are not. LLM grading is designed in
-[llm-grading.md](llm-grading.md); this document describes how it fits into the app.
+Status: the basic loop, scheduling, storage, card editing/export, sample decks, LLM
+grading and voice are done. Drive sync and FSRS are not. LLM grading is designed in
+[llm-grading.md](llm-grading.md) and voice in [voice.md](voice.md); this document
+describes how they fit into the app.
 
 ## Architecture
 
@@ -39,8 +40,8 @@ src/db.ts  ── the only module that touches Dexie ──▶ IndexedDB
   computed, which keeps the algorithm testable. It isn't fully swappable by replacing
   `scheduler.ts` alone, though; see the coupling notes under Data.
 - **Tests** (`make test`, vitest) cover the scheduler, the grader's prompt and
-  validation, the API key handling in `llm.ts`, and the study `Session` with its I/O
-  mocked. The db layer and components are untested; `make eval` (paid, manual) checks
+  validation, the API key handling in `llm.ts`, the study `Session` and the hands-free
+  loop with their I/O mocked, and the speech wrapper against fake browser APIs. The db layer and components are untested; `make eval` (paid, manual) checks
   grading quality against real models.
 - Styling is one global `src/index.css` using CSS variables, with a dark theme through
   `prefers-color-scheme`. Layout is a single 640px column, phone first.
@@ -53,7 +54,7 @@ IndexedDB database `fluency` (`src/db.ts`), schema version 1:
 |---|---|---|
 | `decks` | `id` | `name`, optional `sourceLanguage`/`targetLanguage` (BCP 47 tags, needed for LLM grading), `updatedAt` |
 | `cards` | `id`, `deckId`, `[deckId+sched.due]` | `front` (native, the prompt), `back` (target, the expected answer), `sched`, `updatedAt` |
-| `reviews` | `id`, `cardId`, `at` | one graded attempt: `grade` (1 bad, 2 fair, 3 good, the user's final say), optional typed `answer`, optional `assessment` (the LLM's grade and feedback, with the model, prompt version and graded input) |
+| `reviews` | `id`, `cardId`, `at` | one graded attempt: `grade` (1 bad, 2 fair, 3 good, the user's final say), optional typed or spoken `answer` (`answerMode: 'spoken'` when dictated), optional `assessment` (the LLM's grade and feedback, with the model, prompt version and graded input) |
 
 - Ids are UUIDs. Cards and decks carry `updatedAt`, set by every write, for the planned
   Drive sync. Reviews are immutable once written and have no `updatedAt`, but they can
@@ -92,7 +93,7 @@ back/forward work and no server configuration is needed. Navigation is plain
 | `#/` | `DeckList`: decks with live due counts. Tapping a deck starts studying; Edit opens it. Create deck, export everything, open settings. Until an API key is set, a dismissible card links to settings. |
 | `#/study/<deckId>` | `Study`: the session. |
 | `#/edit/<deckId>` | `DeckView`: add/edit/delete cards, per-card stats (bad/fair/good counts, time until due), rename, deck languages, CSV export, delete deck. |
-| `#/settings` | `Settings`: LLM grading on/off, provider (OpenRouter or a custom OpenAI-compatible URL), model, API key, feedback language, grading rules, Test connection. |
+| `#/settings` | `Settings`: LLM grading on/off, provider (OpenRouter or a custom OpenAI-compatible URL), model, API key, feedback language, grading rules, Test connection; voice: speech rates, a voice per language, reading the reference on reveal, hands-free options (spoken feedback, confirm grade, hide text), what this browser supports. |
 
 A route to a deleted deck renders "no longer exists" in the editor and "nothing due" in
 study, so stale history entries don't crash.
@@ -230,3 +231,26 @@ the prompt and the evaluation, is in [llm-grading.md](llm-grading.md).
 - Test connection grades a fixed example through the real grading path with the
   form's current values, before saving, which also checks that the model supports
   structured output. Editing a field aborts a running test and drops its result.
+
+## Voice
+
+`src/speech.ts` (Web Speech wrapper, voice settings), `src/handsFree.ts` (the
+hands-free loop), `src/SpeakButton.tsx`. The full design is in [voice.md](voice.md).
+
+- **Read aloud:** speaker buttons on the prompt, the reference, the corrected sentence
+  and the summary, in the deck's or the feedback language, with the voice picked per
+  language. One rate for the target language, another for the rest. Optionally the
+  reference is read on reveal.
+- **Speak:** a mic button dictates the answer in the target language into the answer
+  field, which stays editable. Enter while dictating only finishes it. A dictated
+  answer is graded as a transcript (`GradingInput.answerMode: 'spoken'`, which adds a
+  rule to ignore punctuation, spelling and homophones).
+- **Hands-free:** reads the prompt, listens to the answer and submits it, then says
+  the LLM's grade with minimal, short or full spoken feedback, takes that grade and
+  moves on; the feedback stays on screen. Optionally it asks to confirm the grade
+  ("yes" accepts it), or hides the text. Unchecked cards are graded by English commands
+  ("good", "fair", "bad", "skip", "repeat", "undo", "stop"). It drives `Session` through its public
+  actions, so taps and keys keep working, and pauses on silence or errors.
+- Speech recognition isn't available in Firefox or in iOS home-screen apps; there the
+  app offers read-aloud only. Voice needs the deck's languages.
+
