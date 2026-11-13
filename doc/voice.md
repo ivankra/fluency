@@ -38,8 +38,8 @@ speech recognition where the browser doesn't offer it (Firefox, iOS home-screen 
 | Commands | A fixed set of English words, recognized as a separate utterance in English | The UI is English. The answer recognizer runs in the target language and can't reliably catch English words. |
 | Transcript | Goes into the answer field. Dictation leaves it editable until Enter; hands-free submits when the recognizer ends the utterance | Dictation lets the user fix recognition errors; hands-free has no screen to fix them on. |
 | Grading spoken answers | `GradingInput.answerMode: 'spoken'` adds a fixed transcript rule to the prompt; `PROMPT_VERSION` 2 | Recognition errors (punctuation, homophones, character choice) shouldn't cost a grade. This was planned in llm-grading.md. |
-| Final say | Hands-free takes the LLM's grade without asking: it says the grade, reads the reference if the answer wasn't Good, and moves on. Only an unchecked card is graded by voice. Outside hands-free nothing changes | Reading the feedback out at a learner's speech rate took too long. The full feedback stays on screen while the grade is said. |
-| Mistakes | No undo window after a grade. The user taps Undo (or Ctrl/Cmd+Z), or says "undo" at "Done" or when the app asks for a grade | Listening for "undo" after every card cost 2–3 s, and with the LLM grading there's no misheard grade to take back. |
+| Final say | By default hands-free takes the LLM's grade without asking: it says the grade and a short feedback (see Settings), and moves on. With **Confirm grade** set, it says "Suggested: Fair" and waits for "yes" or a grade, as a voice grade. Unchecked cards are always graded by voice. Outside hands-free nothing changes | Reading the full feedback out and waiting for a command took too long. All the feedback stays on screen while the grade is said. |
+| Mistakes | With Confirm grade, after each voice grade the app says the grade and briefly listens for "undo". Otherwise there's no undo window: the user taps Undo (or Ctrl/Cmd+Z), or says "undo" at "Done" or when the app asks for a grade | The window costs 2–3 s per card; it's only worth it where a grade can be misheard. |
 | Starting | Hands-free starts with a tap in each session and is not remembered. The tap unlocks speech and asks for the mic before the loop runs | iOS needs a user gesture; permission dialogs must appear while the user is looking at the screen; the mic shouldn't open on its own. |
 | Silence | No answer: listen again, then read the prompt again, then pause. Commands: hint once, then pause | The mic never stays open forever, and waiting doubles as "repeat the prompt". |
 | iOS home-screen app | Read-aloud only. No mic button and no hands-free, with a note that the keyboard's dictation key still works | WebKit doesn't support recognition in home-screen apps (see below). Sending users to Safari doesn't help: Safari has separate storage, so their decks aren't there. |
@@ -166,7 +166,13 @@ export function primeFromGesture(lang: string): Promise<void>
 export function pickVoice(voices: VoiceLike[], lang: string): VoiceLike | null
 export function joinTranscript(parts: string[], lang: string): string
 
-export interface VoiceSettings { rate: number; privacyNoteSeen: boolean }   // localStorage `fluency:voice`
+export function voicesFor(lang: string): SpeechSynthesisVoice[]   // best first, for the picker
+
+export interface VoiceSettings {   // localStorage `fluency:voice`, see Settings
+  rate: number; otherRate: number; voices: Record<string, string>; readReference: boolean
+  spokenFeedback: 'minimal' | 'short' | 'full'; confirmGrade: boolean; hideText: boolean
+  privacyNoteSeen: boolean
+}
 export function loadVoiceSettings(): VoiceSettings
 export function saveVoiceSettings(settings: VoiceSettings): void
 ```
@@ -178,9 +184,12 @@ export function saveVoiceSettings(settings: VoiceSettings): void
   Prefer an exact tag match, then the same language (a deck in `es` takes `es-ES` or
   `es-MX`). Chinese must not mix scripts: `zh-CN` never takes a `zh-TW` or `zh-HK` voice.
   Among equal matches, prefer the browser default, then local voices, which also work
-  offline.
-- **Rate** applies to the target language only: the reference and the corrected
-  sentence. The prompt, the feedback and announcements are read at normal speed.
+  offline. A voice picked in settings (by `voiceURI`, per language tag) wins while the
+  device still has it, and also serves other tags of its language (picked for `en`, it
+  reads announcements in `en-US`); `speak` looks it up itself, so every caller gets it.
+- **Two rates:** `rate` for the target language (the reference, the corrected sentence,
+  a spoken answer read back) and `otherRate` for everything else (the prompt, the
+  summary, announcements). Callers pass the right one.
 - **`speak` never reports success it can't confirm.** The utterance object is kept
   referenced until it ends, since Chrome can drop it otherwise. A watchdog covers
   missing events:
@@ -249,12 +258,13 @@ export interface HandsFreeDeps {
   languages(): { source: string; target: string; feedback: string } | null
   speak: typeof speak
   listen: typeof listen
-  rate(): number
+  settings(): Pick<VoiceSettings, 'rate' | 'otherRate' | 'spokenFeedback' | 'confirmGrade'>
   keepAwake(): () => void   // Screen Wake Lock; returns release
 }
 
 export type HandsFreePhase =
-  'off' | 'starting' | 'speaking' | 'listening-answer' | 'waiting' | 'listening-command' | 'paused'
+  'off' | 'starting' | 'speaking' | 'listening-answer' | 'waiting' | 'listening-command'
+  | 'listening-undo' | 'paused'
 export interface HandsFreeState { phase: HandsFreePhase; interim: string; message: string | null }
 
 export class HandsFree {
@@ -288,27 +298,32 @@ pass:
                        still nothing → pause
                      session.setAnswer(text, 'spoken', key); session.submit(key)
   revealed         → check pending → wait silently until it settles ("Checking…" on screen)
-                     check done:  say the grade ("Fair"); below Good, speak the
-                                  reference (target, at the user's rate);
-                                  session.grade(the LLM's grade); next pass
+                     check done:  say the grade ("Fair"), unless confirmGrade;
+                                  spoken feedback:
+                                    minimal: nothing more
+                                    short:   below Good, the reference (target rate)
+                                    full:    the reference; with errors, "You said …"
+                                             (spoken answers) and "Corrected …"; summary
+                                  confirmGrade: "Suggested: Fair"; listen for a command
+                                  else: session.grade(the LLM's grade); next pass
                      otherwise (idle, error, no grader): speak the reference;
                                   check error: "Couldn't check.";
                                   "Say good, fair or bad."; listen for a command (English)
 ```
 
-The summary, errors and correction are never read out; they stay on screen until the
-grade is written. If the LLM's grade is refused because another write is in flight, the
-loop asks for a grade instead.
+Whatever isn't read out stays on screen until the grade is written. If the LLM's grade
+is refused because another write is in flight, the loop asks for a grade instead.
 
 | Command result | Then |
 |---|---|
-| grade or skip written | say "Fair" / "Skipped", next pass |
+| grade, accept or skip written | say "Fair" / "Skipped"; with confirmGrade, listen briefly for "undo"; next pass |
+| "accept" without a suggestion | say the hint, listen again |
 | refused, a write in flight | listen again (don't reread the card) |
 | failed save | pause with "Couldn't save" |
 | repeat | the same pass again |
 | undo | `session.undo()`; the next pass reads the previous card out again |
 | stop | stop |
-| nothing heard or not a command | hint once, then pause |
+| nothing heard or not a command | hint once ("Say yes, or good, fair or bad." when there's a suggestion), then pause |
 
 - **What restarts a pass.** A pass is bound to the current slot's `(key, revealed)`.
   The loop keeps the pair it expects.
@@ -353,6 +368,7 @@ are included:
 
 | Say | Also matched | Does | Keyboard |
 |---|---|---|---|
+| "yes", "okay", "accept", "next" | "yeah", "ok" | accept the suggested grade (Confirm grade); without one, the hint is said instead | Space / Enter |
 | "good" | "three", "3" | grade Good | 3 |
 | "fair" | "two", "2", "fare", "to", "too" | grade Fair | 2 |
 | "bad" | "one", "1", "won" | grade Bad | 1 |
@@ -361,7 +377,8 @@ are included:
 | "undo" | "go back" | undo the last attempt | Ctrl/Cmd+Z |
 | "stop" | "pause" | stop hands-free | — |
 
-Commands are only listened for on a revealed card the LLM didn't grade, and at "Done". While the user
+Commands are only listened for on a revealed card the loop didn't grade itself, right
+after a voice grade with Confirm grade, and at "Done". While the user
 answers, the recognizer runs in the target language. To give up on a card, the user
 says so in that language ("no sé", "不知道"): the LLM grades it Bad and the reference is
 read. The spike adds any other mishearings it finds.
@@ -422,10 +439,17 @@ spelling and punctuation, plus the smallest edits that fix any errors.
   - It is hidden where `canListen()` is false. Settings explains why; for iOS
     home-screen apps it says the keyboard's dictation key still works.
 - **Hands-free:** a header button that starts the loop. While it runs, a status line
-  shows the phase ("Listening for your answer…", "Say good, fair, bad, skip or
-  repeat"), the text being recognized, and Stop or Resume. The manual speaker and mic
+  shows the phase ("Listening for your answer…", "Say yes, good, fair, bad, skip
+  or repeat"), the text being recognized, and Stop or Resume. The manual speaker and mic
   buttons are hidden. The answer field isn't focused automatically, so the phone
-  keyboard stays closed.
+  keyboard stays closed. With **Hide the text**, the prompt shows "Listen…" and the
+  reference "Hidden" while the loop runs (not while paused); the corrected sentence,
+  which is close to the reference, is hidden too. When "undo" is all it listens for
+  (after a voice grade with Confirm grade, and at "Done"), the status says "Say undo to
+  go back".
+- **Read the reference on reveal** (a setting, outside hands-free): the reference is read
+  at the target rate when the card is revealed, and stops when the card changes. Not
+  when hands-free stops on a revealed card.
 - **Requirements:** voice needs the deck's languages: the target for listening and
   reading the reference, the source for reading the prompt. Without them the voice
   controls simply don't appear; the sample decks have languages, and the deck editor
@@ -439,8 +463,19 @@ spelling and punctuation, plus the smallest edits that fix any errors.
 
 A **Voice** section on `#/settings`:
 
-- **Speech rate** for the language you're learning: Slower (0.7), Slow (0.85),
-  Normal (1). Stored in `localStorage` (`fluency:voice`), not in the backup.
+Stored in `localStorage` (`fluency:voice`), not in the backup; saved on change.
+
+- **Speech rate** for the language you're learning, and for everything else: Slower
+  (0.7), Slow (0.85), Normal (1), Fast (1.2), Faster (1.4).
+- **Voice per language:** one picker for each language the decks use and the feedback
+  language, plus English (announcements) if none of them is English: "Automatic (<the best match's name>)" or any voice that
+  speaks it, with a speaker button that says the language's name in it.
+- **Read the reference aloud when the answer is shown.** Off by default.
+- **Hands-free** (where recognition works):
+  - **Spoken feedback:** Minimal (the grade), Short (default: also the reference below
+    Good) or Full (the reference, the correction and the summary).
+  - **Confirm the LLM's grade:** off by default (see Final say).
+  - **Hide the prompt and the reference**, for listening practice.
 - **Availability**, so the user doesn't have to guess: "Speech recognition isn't
   supported in this browser" (Firefox), "Speech recognition isn't available in the
   installed app on iOS; the keyboard's dictation key still works", or "Turn on Siri &
@@ -567,9 +602,5 @@ Done when:
   can't measure it, so it is judged by hand during the spike.
 - **Pauses mid-sentence:** if `continuous: false` cuts learners off too often, we need
   a "done" signal, at the cost of being less hands-free (spike item 2).
-- **Voice picker:** choose a voice per language in settings, if the automatic choice
-  turns out poor (for example, robotic local voices on Chrome desktop).
 - **Commands in other languages,** once the UI is translated.
-- **Auto-play the reference** on reveal outside hands-free, as a setting, for listening
-  practice.
 - **A keyboard shortcut for dictation** on desktop.

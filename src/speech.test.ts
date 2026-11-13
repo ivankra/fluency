@@ -307,3 +307,43 @@ describe('primeFromGesture', () => {
     expect(isAbort(((await cutOff) as { error: unknown }).error)).toBe(true)
   })
 })
+
+describe('voice settings', () => {
+  const storage = (stored: Record<string, string>) => ({
+    getItem: (key: string) => stored[key] ?? null,
+    setItem: (key: string, value: string) => void (stored[key] = value),
+    removeItem: (key: string) => void delete stored[key],
+  })
+
+  it('loads defaults, and drops invalid values', async () => {
+    const { loadVoiceSettings } = await load()
+    vi.stubGlobal('localStorage', storage({}))
+    expect(loadVoiceSettings()).toMatchObject({ rate: 1, otherRate: 1, voices: {}, spokenFeedback: 'short', confirmGrade: false })
+    vi.stubGlobal(
+      'localStorage',
+      storage({ 'fluency:voice': JSON.stringify({ rate: 1.2, otherRate: 3, voices: { es: 'a', fr: 5 }, spokenFeedback: 'loud' }) }),
+    )
+    expect(loadVoiceSettings()).toMatchObject({ rate: 1.2, otherRate: 1, voices: { es: 'a' }, spokenFeedback: 'short' })
+  })
+
+  it('speaks with the voice picked in settings, if the device still has it', async () => {
+    const { speak, voicesFor } = await load()
+    const plain = voice('es-ES', { voiceURI: 'plain', default: true } as Partial<VoiceLike>)
+    const mexican = voice('es-MX', { voiceURI: 'mexican' } as Partial<VoiceLike>)
+    synth.voices = [mexican, plain, voice('fr-FR')]
+    expect(voicesFor('es-ES')).toEqual([plain, mexican])
+
+    const stored = { 'fluency:voice': JSON.stringify({ voices: { 'es-ES': 'mexican' } }) }
+    vi.stubGlobal('localStorage', storage(stored))
+    void outcome(speak('hola', 'es-ES', { signal: signal() }))
+    expect(synth.utterances.at(-1)).toMatchObject({ voice: mexican, lang: 'es-MX' })
+
+    stored['fluency:voice'] = JSON.stringify({ voices: { 'es-ES': 'gone' } })
+    void outcome(speak('hola', 'es-ES', { signal: signal() }))
+    expect(synth.utterances.at(-1)).toMatchObject({ voice: plain })
+
+    stored['fluency:voice'] = JSON.stringify({ voices: { es: 'mexican' } }) // picked for another tag
+    void outcome(speak('hola', 'es-ES', { signal: signal() }))
+    expect(synth.utterances.at(-1)).toMatchObject({ voice: mexican })
+  })
+})

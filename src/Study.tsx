@@ -13,6 +13,7 @@ import SpeakButton from './SpeakButton'
 import {
   canListen,
   hasVoice,
+  isAbort,
   listen,
   loadVoiceSettings,
   primeFromGesture,
@@ -31,7 +32,8 @@ const HANDS_FREE_STATUS: Record<Exclude<HandsFreePhase, 'off' | 'paused'>, strin
   speaking: 'Speaking…',
   'listening-answer': 'Listening for your answer…',
   waiting: 'Checking…',
-  'listening-command': 'Say good, fair, bad, skip or repeat.',
+  'listening-command': 'Say yes, good, fair, bad, skip or repeat.',
+  'listening-undo': 'Say undo to go back.',
 }
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -83,7 +85,7 @@ export default function Study({ deckId }: { deckId: string }) {
         },
         speak,
         listen,
-        rate: () => loadVoiceSettings().rate,
+        settings: loadVoiceSettings,
         keepAwake: keepScreenAwake,
       }),
   )
@@ -125,6 +127,7 @@ export default function Study({ deckId }: { deckId: string }) {
   )
   const { phase } = handsFreeState
   const handsFreeRunning = phase !== 'off' && phase !== 'paused'
+  const hideText = handsFreeRunning && voiceSettings.hideText
   const dictation = useDictation(session, slot, target, setVoiceError)
 
   // Voices load asynchronously in Chrome; re-render once they are known.
@@ -139,6 +142,16 @@ export default function Study({ deckId }: { deckId: string }) {
       stale = true
     }
   }, [target])
+
+  // Read the reference on reveal, if set; hands-free reads it itself. Stops with the card.
+  useEffect(() => {
+    if (!slot?.revealed || handsFreeRunning || !voiceSettings.readReference || !target || !hasVoice(target)) return
+    const controller = new AbortController()
+    speak(slot.card.back, target, { rate: voiceSettings.rate, signal: controller.signal }).catch(
+      (error) => !isAbort(error) && setVoiceError(errorMessage(error)),
+    )
+    return () => controller.abort()
+  }, [slot?.key, slot?.revealed]) // only on reveal, not when hands-free stops
 
   // Hands-free stops when the screen is left, the page is hidden or the editor opens.
   useEffect(() => {
@@ -303,9 +316,9 @@ export default function Study({ deckId }: { deckId: string }) {
       ) : (
         <section className="panel study">
           <p className="study__prompt">
-            {card.front}{' '}
+            {hideText ? <span className="muted">Listen…</span> : card.front}{' '}
             {!handsFreeRunning && !dictation.dictating && (
-              <SpeakButton text={card.front} lang={source} onError={showVoiceError} />
+              <SpeakButton text={card.front} lang={source} rate={voiceSettings.otherRate} onError={showVoiceError} />
             )}
           </p>
 
@@ -318,8 +331,11 @@ export default function Study({ deckId }: { deckId: string }) {
                 deckId={deckId}
                 onCheck={() => session.check()}
                 voice={
-                  handsFreeRunning ? null : { target, feedback: settings.feedbackLanguage, rate: voiceSettings.rate }
+                  handsFreeRunning
+                    ? null
+                    : { target, feedback: settings.feedbackLanguage, rate: voiceSettings.rate, otherRate: voiceSettings.otherRate }
                 }
+                hideReference={hideText}
                 onVoiceError={showVoiceError}
               />
               <div className="study__actions">

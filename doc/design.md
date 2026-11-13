@@ -93,7 +93,7 @@ back/forward work and no server configuration is needed. Navigation is plain
 | `#/` | `DeckList`: decks with live due counts. Tapping a deck starts studying; Edit opens it. Create deck, export everything, open settings. Until an API key is set, a dismissible card links to settings. |
 | `#/study/<deckId>` | `Study`: the session. |
 | `#/edit/<deckId>` | `DeckView`: add/edit/delete cards, per-card stats (bad/fair/good counts, time until due), rename, deck languages, CSV export, delete deck. |
-| `#/settings` | `Settings`: LLM grading on/off, provider (OpenRouter or a custom OpenAI-compatible URL), model, API key, feedback language, grading rules, Test connection; voice: speech rate, what this browser supports. |
+| `#/settings` | `Settings`: LLM grading on/off, provider (OpenRouter or a custom OpenAI-compatible URL), model, API key, feedback language, grading rules, Test connection; voice: speech rates, a voice per language, reading the reference on reveal, hands-free options (spoken feedback, confirm grade, hide text), what this browser supports. |
 
 A route to a deleted deck renders "no longer exists" in the editor and "nothing due" in
 study, so stale history entries don't crash.
@@ -238,16 +238,18 @@ the prompt and the evaluation, is in [llm-grading.md](llm-grading.md).
 hands-free loop), `src/SpeakButton.tsx`. The full design is in [voice.md](voice.md).
 
 - **Read aloud:** speaker buttons on the prompt, the reference, the corrected sentence
-  and the summary, in the deck's or the feedback language. The speech rate setting
-  applies to the target language.
+  and the summary, in the deck's or the feedback language, with the voice picked per
+  language. One rate for the target language, another for the rest. Optionally the
+  reference is read on reveal.
 - **Speak:** a mic button dictates the answer in the target language into the answer
   field, which stays editable. Enter while dictating only finishes it. A dictated
   answer is graded as a transcript (`GradingInput.answerMode: 'spoken'`, which adds a
   rule to ignore punctuation, spelling and homophones).
 - **Hands-free:** reads the prompt, listens to the answer and submits it, then says
-  the LLM's grade (and the reference, below Good), takes that grade and moves on; the
-  feedback stays on screen. Unchecked cards are graded by English commands ("good",
-  "fair", "bad", "skip", "repeat", "undo", "stop"). It drives `Session` through its public
+  the LLM's grade with minimal, short or full spoken feedback, takes that grade and
+  moves on; the feedback stays on screen. Optionally it asks to confirm the grade
+  ("yes" accepts it), or hides the text. Unchecked cards are graded by English commands
+  ("good", "fair", "bad", "skip", "repeat", "undo", "stop"). It drives `Session` through its public
   actions, so taps and keys keep working, and pauses on silence or errors.
 - Speech recognition isn't available in Firefox or in iOS home-screen apps; there the
   app offers read-aloud only. Voice needs the deck's languages.

@@ -80,21 +80,26 @@ function chineseVariant(tag: string) {
   return 'hans'
 }
 
-// Best voice for `lang`: exact tag, then the same language; then the browser default,
-// then local voices (they work offline). Null if none speaks the language.
-export function pickVoice<V extends VoiceLike>(voices: V[], lang: string): V | null {
+// How well `voice` fits `lang`: exact tag, then the same language; then the browser
+// default, then local voices (they work offline). 0 if it doesn't speak the language.
+function voiceScore(voice: VoiceLike, lang: string) {
   const wanted = normalizeTag(lang)
   const base = wanted.split('-')[0]
-  const score = (voice: V) => {
-    const tag = normalizeTag(voice.lang)
-    if (tag.split('-')[0] !== base) return 0
-    if (base === 'zh' && chineseVariant(tag) !== chineseVariant(wanted)) return 0
-    return (tag === wanted ? 8 : 4) + (voice.default ? 2 : 0) + (voice.localService ? 1 : 0)
-  }
-  let best: V | null = null
-  for (const voice of voices) if (score(voice) > 0 && (!best || score(voice) > score(best))) best = voice
-  return best
+  const tag = normalizeTag(voice.lang)
+  if (tag.split('-')[0] !== base) return 0
+  if (base === 'zh' && chineseVariant(tag) !== chineseVariant(wanted)) return 0
+  return (tag === wanted ? 8 : 4) + (voice.default ? 2 : 0) + (voice.localService ? 1 : 0)
 }
+
+// The voices that speak `lang`, best first; ties keep the browser's order.
+function rankVoices<V extends VoiceLike>(voices: V[], lang: string): V[] {
+  return voices
+    .filter((voice) => voiceScore(voice, lang) > 0)
+    .sort((a, b) => voiceScore(b, lang) - voiceScore(a, lang))
+}
+
+// Best voice for `lang`, or null if none speaks it.
+export const pickVoice = <V extends VoiceLike>(voices: V[], lang: string): V | null => rankVoices(voices, lang)[0] ?? null
 
 const voices = (): SpeechSynthesisVoice[] => (canSpeak() ? speechSynthesis.getVoices() : [])
 
@@ -110,6 +115,25 @@ export function voicesReady(): Promise<void> {
     const timer = setTimeout(done, 1000)
     speechSynthesis.addEventListener('voiceschanged', done)
   })
+}
+
+// For the voice picker in settings.
+export const voicesFor = (lang: string) => rankVoices(voices(), lang)
+
+// The voice picked in settings for `lang`, else one picked for another tag of the same
+// language (e.g. "en" for announcements in "en-US"), else the best match. Picked voices
+// the device no longer has are ignored.
+function chooseVoice(list: SpeechSynthesisVoice[], lang: string) {
+  const picked = loadVoiceSettings().voices
+  const uris = new Set(Object.values(picked))
+  return (
+    (picked[lang] && list.find((voice) => voice.voiceURI === picked[lang])) ||
+    pickVoice(
+      list.filter((voice) => uris.has(voice.voiceURI)),
+      lang,
+    ) ||
+    pickVoice(list, lang)
+  )
 }
 
 // True while voices aren't known yet: speak() then lets the browser pick by `lang`.
@@ -155,7 +179,7 @@ export function speak(text: string, lang: string, options: { rate?: number; sign
   return new Promise((resolve, reject) => {
     if (!canSpeak()) return reject(new SpeechError('unsupported', "This browser can't read aloud."))
     const list = voices()
-    const voice = pickVoice(list, lang)
+    const voice = chooseVoice(list, lang)
     if (list.length && !voice) {
       return reject(new SpeechError('no-voice', `There's no ${languageName(lang)} voice on this device.`))
     }
@@ -400,19 +424,48 @@ export const RATES = [
   { rate: 0.7, label: 'Slower' },
   { rate: 0.85, label: 'Slow' },
   { rate: 1, label: 'Normal' },
+  { rate: 1.2, label: 'Fast' },
+  { rate: 1.4, label: 'Faster' },
 ]
 
+// What hands-free says once the answer is checked; the rest stays on screen.
+export const SPOKEN_FEEDBACK = [
+  { value: 'minimal', label: 'Minimal: the grade only' },
+  { value: 'short', label: 'Short: the grade, and the reference below Good' },
+  { value: 'full', label: 'Full: the grade, the reference, the correction and the summary' },
+] as const
+export type SpokenFeedback = (typeof SPOKEN_FEEDBACK)[number]['value']
+
 export interface VoiceSettings {
-  rate: number // for the language being learned
+  rate: number // the language being learned
+  otherRate: number // prompts, feedback and announcements
+  voices: Record<string, string> // language tag → voiceURI picked in settings
+  readReference: boolean // read the reference aloud on reveal
+  spokenFeedback: SpokenFeedback // hands-free
+  confirmGrade: boolean // hands-free asks to confirm the LLM's grade instead of taking it
+  hideText: boolean // hands-free hides the prompt and the reference
   privacyNoteSeen: boolean
 }
 
 const VOICE_KEY = 'fluency:voice'
 
 export function loadVoiceSettings(): VoiceSettings {
-  const stored = readStored(VOICE_KEY)
-  const rate = RATES.find(({ rate }) => rate === stored?.rate)?.rate ?? 1
-  return { rate, privacyNoteSeen: stored?.privacyNoteSeen === true }
+  const stored = readStored(VOICE_KEY) ?? {}
+  const rate = (value: unknown) => RATES.find(({ rate }) => rate === value)?.rate ?? 1
+  const voices: Record<string, string> = {}
+  if (typeof stored.voices === 'object' && stored.voices) {
+    for (const [lang, uri] of Object.entries(stored.voices)) if (typeof uri === 'string') voices[lang] = uri
+  }
+  return {
+    rate: rate(stored.rate),
+    otherRate: rate(stored.otherRate),
+    voices,
+    readReference: stored.readReference === true,
+    spokenFeedback: SPOKEN_FEEDBACK.find(({ value }) => value === stored.spokenFeedback)?.value ?? 'short',
+    confirmGrade: stored.confirmGrade === true,
+    hideText: stored.hideText === true,
+    privacyNoteSeen: stored.privacyNoteSeen === true,
+  }
 }
 
 export const saveVoiceSettings = (settings: VoiceSettings) => writeStored(VOICE_KEY, settings)

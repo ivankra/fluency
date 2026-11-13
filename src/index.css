@@ -56,6 +56,11 @@ h2 {
   margin: 0 0 12px;
 }
 
+h3 {
+  font-size: 0.9rem;
+  margin: 8px 0 0;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -432,6 +437,17 @@ select {
 
 .checkbox input {
   width: auto;
+}
+
+.voice-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-picker select {
+  flex: 1;
+  min-width: 0;
 }
 
 .setup-card {

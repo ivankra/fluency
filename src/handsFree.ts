@@ -1,20 +1,23 @@
-// Hands-free study: reads the card, listens to the answer, says the grade and moves on
-// (or takes the grade as a spoken command when the answer wasn't checked). Drives the Session through its public actions,
+// Hands-free study: reads the card, listens to the answer, says the LLM's grade and
+// moves on (or takes the grade as a spoken command: unchecked, or confirmGrade set). Drives the Session through its public actions,
 // like the keyboard does. Speech I/O is injected, so it is tested without a browser
 // (handsFree.test.ts). Design: doc/voice.md.
 import type { Session, Slot } from './check'
 import { GRADES, type Grade } from './db'
-import { abortError, isAbort, SpeechError, type listen, type speak } from './speech'
+import { showCorrected } from './grader'
+import { abortError, isAbort, SpeechError, type listen, type speak, type VoiceSettings } from './speech'
 
 const ENGLISH = 'en-US' // the UI language: commands and announcements
 const HINT = 'Say good, fair or bad.'
+const hint = (suggested?: Grade) => (suggested ? 'Say yes, or good, fair or bad.' : HINT)
 const gradeLabel = (grade: Grade) => GRADES.find((entry) => entry.grade === grade)!.label
 
-export type Command = { grade: Grade } | 'skip' | 'repeat' | 'undo' | 'stop'
+export type Command = { grade: Grade } | 'accept' | 'skip' | 'repeat' | 'undo' | 'stop'
 
 // Whole phrases, including common mishearings and digits.
 const PHRASES = new Map<string, Command>()
 const phrases = (command: Command, words: string[]) => words.forEach((word) => PHRASES.set(word, command))
+phrases('accept', ['yes', 'yeah', 'ok', 'okay', 'accept', 'next'])
 phrases({ grade: 3 }, ['good', 'three', '3'])
 phrases({ grade: 2 }, ['fair', 'fare', 'two', '2', 'to', 'too'])
 phrases({ grade: 1 }, ['bad', 'one', '1', 'won'])
@@ -42,7 +45,7 @@ export interface HandsFreeDeps {
   languages(): { source: string; target: string; feedback: string } | null
   speak: typeof speak
   listen: typeof listen
-  rate(): number // for the target language
+  settings(): Pick<VoiceSettings, 'rate' | 'otherRate' | 'spokenFeedback' | 'confirmGrade'>
   keepAwake(): () => void // returns release
 }
 
@@ -53,6 +56,7 @@ export type HandsFreePhase =
   | 'listening-answer'
   | 'waiting'
   | 'listening-command'
+  | 'listening-undo' // after a grade with confirmGrade, and at "Done"
   | 'paused'
 
 export interface HandsFreeState {
@@ -183,7 +187,7 @@ export class HandsFree {
 
     if (!slot) {
       await this.say('Done. Say undo to go back.', ENGLISH, signal)
-      if ((await this.hear(signal)) === 'undo' && (await this.write(() => session.undo(), signal))) return this.next()
+      if ((await this.hear(signal, 'listening-undo')) === 'undo' && (await this.write(() => session.undo(), signal))) return this.next()
       return this.stop()
     }
 
@@ -202,53 +206,85 @@ export class HandsFree {
       return this.next()
     }
 
-    // Short feedback only, the rest stays on screen: the LLM's grade is taken as is.
-    const rate = this.deps.rate()
+    // The spoken feedback is short by default; the rest stays on screen.
+    const { rate, spokenFeedback, confirmGrade } = this.deps.settings()
     if (session.current?.check.status === 'pending') {
       await this.checkSettled(signal)
       signal.throwIfAborted()
     }
-    const { check } = session.current!
-    if (check.status === 'done') {
-      const { grade } = check.assessment
-      await this.say(`${gradeLabel(grade)}.`, ENGLISH, signal)
-      if (grade !== 3) await this.say(slot.card.back, languages.target, signal, rate)
-      if (await this.write(() => session.grade(grade), signal)) return this.next()
-    } else {
+    const { check, answer, answerMode } = session.current!
+    if (check.status !== 'done') {
       await this.say(slot.card.back, languages.target, signal, rate)
       if (check.status === 'error') await this.say("Couldn't check.", ENGLISH, signal)
+      await this.say(HINT, ENGLISH, signal)
+      return this.takeCommand(undefined, signal)
     }
-    // No grade from the LLM (or another write was running): ask for one.
-    await this.say(HINT, ENGLISH, signal)
-    await this.takeCommand(signal)
+    const { assessment } = check
+    const label = `${gradeLabel(assessment.grade)}.`
+    if (!confirmGrade) await this.say(label, ENGLISH, signal)
+    if (spokenFeedback === 'full') {
+      await this.say(slot.card.back, languages.target, signal, rate)
+      if (showCorrected(assessment, answer, answerMode)) {
+        if (answerMode === 'spoken') {
+          await this.say('You said:', ENGLISH, signal)
+          await this.say(answer, languages.target, signal, rate)
+        }
+        await this.say('Corrected:', ENGLISH, signal)
+        await this.say(assessment.corrected, languages.target, signal, rate)
+      }
+      await this.say(assessment.summary, languages.feedback, signal)
+    } else if (spokenFeedback === 'short' && assessment.grade !== 3) {
+      await this.say(slot.card.back, languages.target, signal, rate)
+    }
+    if (confirmGrade) await this.say(`Suggested: ${label}`, ENGLISH, signal)
+    else if (await this.write(() => session.grade(assessment.grade), signal)) return this.next()
+    else await this.say(hint(assessment.grade), ENGLISH, signal) // refused: another write is running
+    await this.takeCommand(assessment.grade, signal)
   }
 
   // Listen for commands on a revealed card until one is carried out.
-  private async takeCommand(signal: AbortSignal) {
+  private async takeCommand(suggested: Grade | undefined, signal: AbortSignal) {
     const { session } = this.deps
     let hinted = false
     for (;;) {
       const command = await this.hear(signal)
       if (command === 'repeat') return this.next()
       if (command === 'stop') return this.stop()
+      if (command === 'accept' && !suggested) {
+        await this.say(HINT, ENGLISH, signal)
+        continue
+      }
       if (command === 'undo') {
         if (!session.getState().history.length) await this.say('Nothing to undo.', ENGLISH, signal)
         else if (await this.write(() => session.undo(), signal)) return this.next()
         continue
       }
       if (command) {
-        const grade = command === 'skip' ? undefined : command.grade
+        const grade = command === 'accept' ? suggested : command === 'skip' ? undefined : command.grade
         if (!(await this.write(() => (grade ? session.grade(grade) : session.skip()), signal))) continue
         await this.say(grade ? `${gradeLabel(grade)}.` : 'Skipped.', ENGLISH, signal)
-        return this.next()
+        return this.afterGrade(signal)
       }
       if (hinted) return this.halt('paused', "Didn't catch a command.")
       hinted = true
-      await this.say(HINT, ENGLISH, signal)
+      await this.say(hint(suggested), ENGLISH, signal)
     }
   }
 
-  private async say(text: string, lang: string, signal: AbortSignal, rate = 1) {
+  // With confirmGrade, a brief chance to take back a misheard grade, or to stop.
+  // Otherwise straight on, for speed. "Done" offers its own.
+  private async afterGrade(signal: AbortSignal) {
+    const { session } = this.deps
+    if (this.deps.settings().confirmGrade && session.current) {
+      const command = await this.hear(signal, 'listening-undo')
+      if (command === 'stop') return this.stop()
+      if (command === 'undo') await this.write(() => session.undo(), signal)
+    }
+    this.next()
+  }
+
+  // Rate defaults to the one for everything but the language being learned.
+  private async say(text: string, lang: string, signal: AbortSignal, rate = this.deps.settings().otherRate) {
     if (!text.trim()) return
     this.set({ phase: 'speaking' })
     await this.deps.speak(text, lang, { rate, signal })
@@ -270,8 +306,8 @@ export class HandsFree {
     return (await this.listenOnce(lang, signal)).text.trim()
   }
 
-  private async hear(signal: AbortSignal): Promise<Command | null> {
-    this.set({ phase: 'listening-command' })
+  private async hear(signal: AbortSignal, phase: 'listening-command' | 'listening-undo' = 'listening-command') {
+    this.set({ phase })
     return parseCommand((await this.listenOnce(ENGLISH, signal)).alternatives)
   }
 

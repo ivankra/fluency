@@ -3,7 +3,7 @@ import { Session, type Grader } from './check'
 import { newSched, type Card } from './db'
 import type { Assessment } from './grader'
 import { HandsFree, parseCommand } from './handsFree'
-import { abortError, SpeechError, type Heard } from './speech'
+import { abortError, SpeechError, type Heard, type VoiceSettings } from './speech'
 
 const NOW = 1_000_000_000_000
 const HINT = 'Say good, fair or bad.'
@@ -35,7 +35,7 @@ const settle = async () => {
 
 // A hands-free loop over a real Session with mocked I/O. Every listen waits until the
 // test replies; speech resolves at once unless the test holds a text.
-function setup({ cards = [makeCard('a'), makeCard('b')], grading = true } = {}) {
+function setup({ cards = [makeCard('a'), makeCard('b')], grading = true, voice = {} as Partial<VoiceSettings> } = {}) {
   const assessCalls: ReturnType<typeof deferred<{ assessment: Assessment }>>[] = []
   const grader: Grader = {
     model: 'test-model',
@@ -61,7 +61,7 @@ function setup({ cards = [makeCard('a'), makeCard('b')], grading = true } = {}) 
 
   const spoken: string[] = []
   const held = new Map<string, Promise<void>>()
-  const speak = vi.fn(async (text: string, _lang: string, options: { signal: AbortSignal }) => {
+  const speak = vi.fn(async (text: string, _lang: string, options: { rate?: number; signal: AbortSignal }) => {
     spoken.push(text)
     await held.get(text)
     if (options.signal.aborted) throw abortError()
@@ -80,7 +80,7 @@ function setup({ cards = [makeCard('a'), makeCard('b')], grading = true } = {}) 
     languages: () => ({ source: 'en', target: 'es', feedback: 'en' }),
     speak,
     listen,
-    rate: () => 1,
+    settings: () => ({ rate: 1, otherRate: 1, spokenFeedback: 'short' as const, confirmGrade: false, ...voice }),
     keepAwake,
   })
 
@@ -100,7 +100,7 @@ describe('parseCommand', () => {
   it('matches whole phrases, ignoring case and punctuation', () => {
     expect(parseCommand(['Good.'])).toEqual({ grade: 3 })
     expect(parseCommand(['Skip!'])).toBe('skip')
-    expect(parseCommand(['yes'])).toBeNull()
+    expect(parseCommand(['OK!'])).toBe('accept')
     expect(parseCommand(['Go back'])).toBe('undo')
     expect(parseCommand(['good morning'])).toBeNull()
     expect(parseCommand([])).toBeNull()
@@ -163,6 +163,59 @@ describe('HandsFree', () => {
     expect(deps.recordReview).toHaveBeenCalledTimes(1)
     expect(deps.recordReview).toHaveBeenCalledWith(expect.anything(), 1, expect.anything(), expect.anything())
     expect(spoken.at(-1)).toBe('front b')
+  })
+
+  it('minimal feedback says the grade only', async () => {
+    const { assessCalls, spoken, handsFree, reply } = setup({ voice: { spokenFeedback: 'minimal' } })
+    handsFree.start()
+    await reply('mi respuesta')
+    assessCalls[0].resolve({ assessment: assessment(1) })
+    await settle()
+    expect(spoken).toEqual(['front a', 'Bad.', 'front b'])
+  })
+
+  it('full feedback reads the reference, a spoken answer, the correction and the summary', async () => {
+    const { assessCalls, spoken, handsFree, reply } = setup({ voice: { spokenFeedback: 'full' } })
+    handsFree.start()
+    await reply('la casa es blanco')
+    assessCalls[0].resolve({ assessment: assessment(2, { errors: [{ kind: 'grammar', note: 'n' }], corrected: 'La casa es blanca.' }) })
+    await settle()
+    expect(spoken).toEqual(['front a', 'Fair.', 'back a', 'You said:', 'la casa es blanco', 'Corrected:', 'La casa es blanca.', 'summary', 'front b'])
+  })
+
+  it('with confirmGrade, suggests the grade, takes "yes" and offers undo', async () => {
+    const { session, deps, assessCalls, spoken, handsFree, reply } = setup({ voice: { confirmGrade: true } })
+    handsFree.start()
+    await reply('mi respuesta')
+    assessCalls[0].resolve({ assessment: assessment(3) })
+    await settle()
+    expect(deps.recordReview).not.toHaveBeenCalled()
+    await reply('yes')
+    expect(deps.recordReview).toHaveBeenCalledWith(expect.anything(), 3, expect.anything(), expect.anything())
+    await reply('undo')
+    expect(session.getState()).toMatchObject({ index: 0, history: [] })
+    expect(spoken).toEqual(['front a', 'Suggested: Good.', 'Good.', 'Suggested: Good.'])
+  })
+
+  it('with confirmGrade, hints at "yes", and says when only "undo" is listened for', async () => {
+    const { assessCalls, spoken, handsFree, reply, phase } = setup({ voice: { confirmGrade: true } })
+    handsFree.start()
+    await reply('mi respuesta')
+    assessCalls[0].resolve({ assessment: assessment(2) })
+    await reply('banana')
+    expect(spoken.at(-1)).toBe('Say yes, or good, fair or bad.')
+    await reply('good')
+    expect(phase()).toBe('listening-undo')
+  })
+
+  it('reads target-language text at its own rate and the rest at the other', async () => {
+    const { assessCalls, speak, handsFree, reply } = setup({ voice: { rate: 0.7, otherRate: 1.4 } })
+    handsFree.start()
+    await reply('mi respuesta')
+    assessCalls[0].resolve({ assessment: assessment(2) })
+    await settle()
+    const rates = Object.fromEntries(speak.mock.calls.map(([text, , options]) => [text, options.rate]))
+    expect(rates).toEqual({ 'front a': 1.4, 'Fair.': 1.4, 'back a': 0.7, 'front b': 1.4 })
   })
 
   it('without an LLM grade, reads the reference and asks for one', async () => {
