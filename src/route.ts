@@ -1,10 +1,11 @@
 // Minimal hash router, so the browser's back/forward buttons move between screens.
 import { useSyncExternalStore } from 'react'
 
-export type Route = { name: 'list' } | { name: 'study' | 'edit'; deckId: string }
+export type Route = { name: 'list' } | { name: 'settings' } | { name: 'study' | 'edit'; deckId: string }
 
 export const href = {
   list: '#/',
+  settings: '#/settings',
   study: (deckId: string) => `#/study/${deckId}`,
   edit: (deckId: string) => `#/edit/${deckId}`,
 }
@@ -17,5 +18,6 @@ const subscribe = (notify: () => void) => {
 export function useRoute(): Route {
   const hash = useSyncExternalStore(subscribe, () => location.hash)
   const [name, deckId] = hash.replace(/^#\/?/, '').split('/')
-  return (name === 'study' || name === 'edit') && deckId ? { name, deckId } : { name: 'list' }
+  if ((name === 'study' || name === 'edit') && deckId) return { name, deckId }
+  return name === 'settings' ? { name } : { name: 'list' }
 }

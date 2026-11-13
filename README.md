@@ -2,9 +2,9 @@
 
 A sentence-drill app for intermediate and advanced language learners, built as a Progressive Web App with React, TypeScript and Vite. It shows a sentence in your language, you translate it into the language you're learning, and a spaced-repetition scheduler decides when you see it again. All data stays on your device.
 
-Current features: decks and cards you can create, edit and export (CSV per deck, JSON backup of everything), sample decks, a study loop with self-rating and skip, spaced-repetition scheduling, and offline use with an update prompt.
+Current features: decks and cards you can create, edit and export (CSV per deck, JSON backup of everything), sample decks, a study loop with self-rating and skip, spaced-repetition scheduling, LLM provider settings (bring your own API key), and offline use with an update prompt.
 
-For how it works, see [design.md](design.md).
+For how it works, see [doc/design.md](doc/design.md).
 
 ## Requirements
 
@@ -33,7 +33,8 @@ The service worker is off under `make dev`. To test installing the app or using 
 
 | Path | Purpose |
 |---|---|
-| `design.md` | Data model, screens, study loop and scheduling |
+| `doc/design.md` | Data model, screens, study loop and scheduling |
+| `doc/llm-grading.md` | Design for LLM grading and feedback |
 | `index.html` | HTML entry point: meta tags, icons, root element |
 | `src/main.tsx` | Mounts React and seeds the sample decks on first run |
 | `src/App.tsx` | Root component: picks the screen from the URL |
@@ -42,6 +43,7 @@ The service worker is off under `make dev`. To test installing the app or using 
 | `src/scheduler.ts` | Spaced-repetition scheduler (`scheduler.test.ts` has its tests) |
 | `src/time.ts` | Time constants shared by the scheduler and the UI |
 | `src/DeckList.tsx` | Home screen: decks and due counts |
+| `src/Settings.tsx`, `src/llm.ts` | LLM provider settings, API key, chat request (`llm.test.ts` has its tests) |
 | `src/Study.tsx` | Study session |
 | `src/DeckView.tsx`, `src/CardForm.tsx` | Deck editor: add, edit and delete cards |
 | `src/sampleDecks.ts` | Starter decks (Spanish, Chinese, Japanese) |

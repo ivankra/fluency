@@ -1,6 +1,7 @@
 import DeckList from './DeckList'
 import DeckView from './DeckView'
 import Study from './Study'
+import Settings from './Settings'
 import UpdateToast from './UpdateToast'
 import IosInstallPrompt from './IosInstallPrompt'
 import { useRoute } from './route'
@@ -14,6 +15,8 @@ export default function App() {
         <Study key={route.deckId} deckId={route.deckId} />
       ) : route.name === 'edit' ? (
         <DeckView key={route.deckId} deckId={route.deckId} />
+      ) : route.name === 'settings' ? (
+        <Settings />
       ) : (
         <DeckList />
       )}
