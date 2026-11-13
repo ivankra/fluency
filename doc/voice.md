@@ -11,8 +11,8 @@ The app targets speaking fluency, but today the user types. Voice lets them:
    and the feedback summary;
 2. **speak** the translation instead of typing it;
 3. go through a whole session **hands-free** (while walking, cooking, driving as a
-   passenger): the app reads the prompt, listens to the answer, reads the feedback,
-   and takes the grade as a spoken command.
+   passenger): the app reads the prompt, listens to the answer, says the LLM's grade
+   and moves on (or takes the grade as a spoken command when there is no check).
 
 There is still no backend: speech uses the browser's Web Speech API, as the proposal
 planned. [llm-grading.md](llm-grading.md) laid the groundwork: BCP 47 language tags on
@@ -38,8 +38,8 @@ speech recognition where the browser doesn't offer it (Firefox, iOS home-screen 
 | Commands | A fixed set of English words, recognized as a separate utterance in English | The UI is English. The answer recognizer runs in the target language and can't reliably catch English words. |
 | Transcript | Goes into the answer field. Dictation leaves it editable until Enter; hands-free submits when the recognizer ends the utterance | Dictation lets the user fix recognition errors; hands-free has no screen to fix them on. |
 | Grading spoken answers | `GradingInput.answerMode: 'spoken'` adds a fixed transcript rule to the prompt; `PROMPT_VERSION` 2 | Recognition errors (punctuation, homophones, character choice) shouldn't cost a grade. This was planned in llm-grading.md. |
-| Final say | Unchanged: the user grades, by voice in hands-free mode. "Yes" accepts a suggestion only when there is one | One commit point, as before. Eyes-free, a default Good for "yes" is too easy to give by accident. |
-| Mistakes | After each voice grade the app says the grade and briefly listens for "undo" | Otherwise a misheard grade can't be undone hands-free: the next card listens in the target language. |
+| Final say | Hands-free takes the LLM's grade without asking: it says the grade, reads the reference if the answer wasn't Good, and moves on. Only an unchecked card is graded by voice. Outside hands-free nothing changes | Reading the feedback out at a learner's speech rate took too long. The full feedback stays on screen while the grade is said. |
+| Mistakes | No undo window after a grade. The user taps Undo (or Ctrl/Cmd+Z), or says "undo" at "Done" or when the app asks for a grade | Listening for "undo" after every card cost 2–3 s, and with the LLM grading there's no misheard grade to take back. |
 | Starting | Hands-free starts with a tap in each session and is not remembered. The tap unlocks speech and asks for the mic before the loop runs | iOS needs a user gesture; permission dialogs must appear while the user is looking at the screen; the mic shouldn't open on its own. |
 | Silence | No answer: listen again, then read the prompt again, then pause. Commands: hint once, then pause | The mic never stays open forever, and waiting doubles as "repeat the prompt". |
 | iOS home-screen app | Read-aloud only. No mic button and no hands-free, with a note that the keyboard's dictation key still works | WebKit doesn't support recognition in home-screen apps (see below). Sending users to Safari doesn't help: Safari has separate storage, so their decks aren't there. |
@@ -180,7 +180,7 @@ export function saveVoiceSettings(settings: VoiceSettings): void
   Among equal matches, prefer the browser default, then local voices, which also work
   offline.
 - **Rate** applies to the target language only: the reference and the corrected
-  sentence. The prompt and the feedback are read at normal speed.
+  sentence. The prompt, the feedback and announcements are read at normal speed.
 - **`speak` never reports success it can't confirm.** The utterance object is kept
   referenced until it ends, since Chrome can drop it otherwise. A watchdog covers
   missing events:
@@ -264,7 +264,7 @@ export class HandsFree {
   dispose()
 }
 
-export type Command = { grade: Grade } | 'accept' | 'skip' | 'repeat' | 'undo' | 'stop'
+export type Command = { grade: Grade } | 'skip' | 'repeat' | 'undo' | 'stop'
 export function parseCommand(alternatives: string[]): Command | null   // pure, tested
 ```
 
@@ -287,21 +287,24 @@ pass:
                        still nothing → read the prompt again, listen;
                        still nothing → pause
                      session.setAnswer(text, 'spoken', key); session.submit(key)
-  revealed         → speak reference (target, at the user's rate)
-                     check pending → say "Checking", wait until it settles
-                     check done:  if it has errors: "You said …", corrected
-                                  summary, "Suggested: Fair"
-                     check error: "Couldn't check."
-                     no suggestion (idle, error, no grader): "Say good, fair or bad."
-                     listen for a command (English)
+  revealed         → check pending → wait silently until it settles ("Checking…" on screen)
+                     check done:  say the grade ("Fair"); below Good, speak the
+                                  reference (target, at the user's rate);
+                                  session.grade(the LLM's grade); next pass
+                     otherwise (idle, error, no grader): speak the reference;
+                                  check error: "Couldn't check.";
+                                  "Say good, fair or bad."; listen for a command (English)
 ```
+
+The summary, errors and correction are never read out; they stay on screen until the
+grade is written. If the LLM's grade is refused because another write is in flight, the
+loop asks for a grade instead.
 
 | Command result | Then |
 |---|---|
-| grade, accept or skip written | say "Fair" / "Skipped", listen briefly for "undo", next pass |
+| grade or skip written | say "Fair" / "Skipped", next pass |
 | refused, a write in flight | listen again (don't reread the card) |
 | failed save | pause with "Couldn't save" |
-| "accept" without a suggestion | say the hint, listen again |
 | repeat | the same pass again |
 | undo | `session.undo()`; the next pass reads the previous card out again |
 | stop | stop |
@@ -315,8 +318,7 @@ pass:
     `submit()` and before `grade()`'s promise resolves. So the loop marks an action as
     its own *before* calling it, and ignores pair changes until the action settles.
     `submit` settles at once; `grade`, `skip` and `undo` settle when their promise
-    resolves. The loop then takes the current pair as expected and carries on, with
-    the undo window after a grade, for example.
+    resolves. The loop then takes the current pair as expected and carries on.
   - Any other change of the pair comes from outside (a tapped grade, a key, a typed
     submit, undo by button). It aborts the running speak or listen and starts a new
     pass on the current slot. So keyboard and buttons keep working, and an undo lands
@@ -324,7 +326,7 @@ pass:
   - While the loop's own write is in flight, outside writes are refused by `Session`
     anyway, so there's nothing to miss.
 - **Never pays for a check.** On an `idle` check the loop doesn't call `check()`: it
-  treats the card as having no suggestion. This keeps the rule that nothing calls the
+  treats the card as unchecked and asks for a grade. This keeps the rule that nothing calls the
   LLM after an undo or a reconnect. An idle revealed slot happens after submitting
   offline, after undoing to a card graded while its check was pending, or with an
   empty answer.
@@ -351,7 +353,6 @@ are included:
 
 | Say | Also matched | Does | Keyboard |
 |---|---|---|---|
-| "yes", "okay", "accept", "next" | "yeah", "ok" | accept the suggested grade; without one, the hint is said instead | Space / Enter (which grades Good without a suggestion) |
 | "good" | "three", "3" | grade Good | 3 |
 | "fair" | "two", "2", "fare", "to", "too" | grade Fair | 2 |
 | "bad" | "one", "1", "won" | grade Bad | 1 |
@@ -360,7 +361,7 @@ are included:
 | "undo" | "go back" | undo the last attempt | Ctrl/Cmd+Z |
 | "stop" | "pause" | stop hands-free | — |
 
-Commands are only listened for after the reveal and right after a grade. While the user
+Commands are only listened for on a revealed card the LLM didn't grade, and at "Done". While the user
 answers, the recognizer runs in the target language. To give up on a card, the user
 says so in that language ("no sé", "不知道"): the LLM grades it Bad and the reference is
 read. The spike adds any other mishearings it finds.
@@ -383,13 +384,13 @@ spelling and punctuation, plus the smallest edits that fix any errors.
 - `PROMPT_VERSION` becomes 2. The prompt for typed answers doesn't change.
 - **Showing the corrected sentence.** A transcript has no punctuation, so its
   corrected version almost always differs from it, even when nothing is wrong. For
-  spoken answers, the feedback panel and hands-free show and read the corrected
+  spoken answers, the feedback panel shows the corrected
   sentence only when `errors` isn't empty. Typed answers keep the current rule: shown
   when it differs from the answer.
 - Pronunciation is judged only indirectly: a badly pronounced word may be heard as a
   different word and graded as one. The panel labels the answer "You said" so it is
-  clear the text is a transcript. Hands-free reads it back when there are errors, so
-  the user can tell a misrecognition from a real mistake.
+  clear the text is a transcript, so the user can tell a misrecognition from a real
+  mistake.
 - **Evaluation:** `eval/grading-cases.json` gains an optional `answerMode`. The script
   already passes each case's fields to the grader; it reports spoken cases in their own
   row, so a few of them can't hide among the typed ones. New spoken cases:
@@ -496,18 +497,17 @@ this way.
   - `grade`, `skip` and `undo` return false when refused or failed.
 - `handsFree.ts`, with a real `Session` (mocked I/O, as in `check.test.ts`) and mocked
   `speak`/`listen`:
-  - happy path: the prompt is read, the answer is submitted as spoken, the reference
-    is read during the check, then the summary and the suggestion; "yes" accepts, the
-    grade is confirmed, the next card follows;
+  - happy path: the prompt is read, the answer is submitted as spoken, the LLM's grade
+    is said and written without asking, the next card follows; below Good the reference
+    is read first, before the grade is written;
   - the loop's own `setAnswer`, `submit` and `grade` don't restart its pass, including
-    `Session`'s synchronous notifications from inside them, and the undo window after
-    a grade runs; a check resolving while the reference is read doesn't restart the
-    pass either;
+    `Session`'s synchronous notifications from inside them; a grade tapped while the
+    grade is said moves on without grading twice;
   - outside changes: a tapped grade while listening aborts and moves on; a typed submit
     on the same card while listening moves to the revealed pass;
-  - "undo" right after a grade, and at "Done", returns to the previous card and reads
-    it out again;
-  - no suggestion (no grader, check error, idle after undo): the hint, "yes" ignored,
+  - "undo" when asked for a grade, and at "Done", returns to the previous card and
+    reads it out again;
+  - no LLM grade (no grader, check error, idle after undo): the reference, the hint,
     and `check()` never called;
   - a command refused while a write is in flight: listen again;
   - silence: listen again, read the prompt again, then pause; unknown commands: the
@@ -567,8 +567,6 @@ Done when:
   can't measure it, so it is judged by hand during the spike.
 - **Pauses mid-sentence:** if `continuous: false` cuts learners off too often, we need
   a "done" signal, at the cost of being less hands-free (spike item 2).
-- **The undo window adds time to every card** (about 2–3 s). If it feels slow, shorten
-  it or offer "undo" only at the next reveal.
 - **Voice picker:** choose a voice per language in settings, if the automatic choice
   turns out poor (for example, robotic local voices on Chrome desktop).
 - **Commands in other languages,** once the UI is translated.

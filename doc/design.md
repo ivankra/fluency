@@ -244,9 +244,10 @@ hands-free loop), `src/SpeakButton.tsx`. The full design is in [voice.md](voice.
   field, which stays editable. Enter while dictating only finishes it. A dictated
   answer is graded as a transcript (`GradingInput.answerMode: 'spoken'`, which adds a
   rule to ignore punctuation, spelling and homophones).
-- **Hands-free:** reads the prompt, listens to the answer and submits it, reads the
-  reference and the feedback, and takes English commands ("good", "fair", "bad",
-  "yes", "skip", "repeat", "undo", "stop"). It drives `Session` through its public
+- **Hands-free:** reads the prompt, listens to the answer and submits it, then says
+  the LLM's grade (and the reference, below Good), takes that grade and moves on; the
+  feedback stays on screen. Unchecked cards are graded by English commands ("good",
+  "fair", "bad", "skip", "repeat", "undo", "stop"). It drives `Session` through its public
   actions, so taps and keys keep working, and pauses on silence or errors.
 - Speech recognition isn't available in Firefox or in iOS home-screen apps; there the
   app offers read-aloud only. Voice needs the deck's languages.

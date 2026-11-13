@@ -99,7 +99,8 @@ function setup({ cards = [makeCard('a'), makeCard('b')], grading = true } = {}) 
 describe('parseCommand', () => {
   it('matches whole phrases, ignoring case and punctuation', () => {
     expect(parseCommand(['Good.'])).toEqual({ grade: 3 })
-    expect(parseCommand(['OK!'])).toBe('accept')
+    expect(parseCommand(['Skip!'])).toBe('skip')
+    expect(parseCommand(['yes'])).toBeNull()
     expect(parseCommand(['Go back'])).toBe('undo')
     expect(parseCommand(['good morning'])).toBeNull()
     expect(parseCommand([])).toBeNull()
@@ -119,50 +120,69 @@ describe('parseCommand', () => {
 })
 
 describe('HandsFree', () => {
-  it('runs a card: prompt, spoken answer, reference, feedback, accepted grade', async () => {
+  it('runs a card: prompt, spoken answer, then the LLM grade, without asking', async () => {
     const { session, deps, assessCalls, spoken, handsFree, reply, phase } = setup()
     handsFree.start()
     await reply('mi respuesta')
     expect(session.current).toMatchObject({ answer: 'mi respuesta', answerMode: 'spoken', revealed: true })
+    expect(phase()).toBe('waiting')
+    assessCalls[0].resolve({ assessment: assessment(3) })
     await settle()
-    assessCalls[0].resolve({ assessment: assessment(2) })
-    await reply('yes')
-    await reply('') // no undo
-    expect(deps.recordReview).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }), 2, expect.anything(), expect.objectContaining({ answerMode: 'spoken' }))
-    expect(spoken).toEqual(['front a', 'back a', 'Checking.', 'summary', 'Suggested: Fair.', 'Fair.', 'front b'])
+    expect(deps.recordReview).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }), 3, expect.anything(), expect.objectContaining({ answerMode: 'spoken' }))
+    expect(spoken).toEqual(['front a', 'Good.', 'front b'])
     expect(phase()).toBe('listening-answer')
   })
 
-  it('a check finishing while the reference is read does not restart the card', async () => {
-    const { assessCalls, spoken, held, handsFree, reply } = setup()
+  it('below Good, reads the reference before moving on, with the feedback still on screen', async () => {
+    const { session, deps, assessCalls, spoken, held, handsFree, reply } = setup()
     const reading = deferred<void>()
     held.set('back a', reading.promise)
-    handsFree.start()
-    await reply('mi respuesta')
-    assessCalls[0].resolve({ assessment: assessment(3) })
-    await settle()
-    reading.resolve()
-    await settle()
-    expect(spoken).toEqual(['front a', 'back a', 'summary', 'Suggested: Good.'])
-  })
-
-  it('reads back a spoken answer and the correction when there are errors', async () => {
-    const { assessCalls, spoken, handsFree, reply } = setup()
     handsFree.start()
     await reply('la casa es blanco')
     assessCalls[0].resolve({ assessment: assessment(2, { errors: [{ kind: 'grammar', note: 'n' }], corrected: 'La casa es blanca.' }) })
     await settle()
-    expect(spoken.slice(3)).toEqual(['You said:', 'la casa es blanco', 'Corrected:', 'La casa es blanca.', 'summary', 'Suggested: Fair.'])
+    expect(session.current).toMatchObject({ key: expect.anything(), revealed: true })
+    expect(deps.recordReview).not.toHaveBeenCalled()
+    reading.resolve()
+    await settle()
+    expect(spoken).toEqual(['front a', 'Fair.', 'back a', 'front b'])
+    expect(deps.recordReview).toHaveBeenCalledWith(expect.anything(), 2, expect.anything(), expect.anything())
   })
 
-  it('without a suggestion, asks for a grade and ignores "yes"', async () => {
+  it('a grade tapped while the grade is said moves on without grading twice', async () => {
+    const { session, deps, assessCalls, spoken, held, handsFree, reply } = setup()
+    const saying = deferred<void>()
+    held.set('Good.', saying.promise)
+    handsFree.start()
+    await reply('mi respuesta')
+    assessCalls[0].resolve({ assessment: assessment(3) })
+    await settle()
+    await session.grade(1)
+    saying.resolve()
+    await settle()
+    expect(deps.recordReview).toHaveBeenCalledTimes(1)
+    expect(deps.recordReview).toHaveBeenCalledWith(expect.anything(), 1, expect.anything(), expect.anything())
+    expect(spoken.at(-1)).toBe('front b')
+  })
+
+  it('without an LLM grade, reads the reference and asks for one', async () => {
     const { deps, spoken, handsFree, reply } = setup({ grading: false })
     handsFree.start()
     await reply('mi respuesta')
     await reply('yes')
     await reply('good')
-    expect(spoken.filter((text) => text === HINT)).toHaveLength(2)
+    expect(spoken).toEqual(['front a', 'back a', HINT, HINT, 'Good.', 'front b'])
     expect(deps.recordReview).toHaveBeenCalledWith(expect.anything(), 3, expect.anything(), expect.anything())
+  })
+
+  it('a failed check says so and asks for a grade', async () => {
+    const { assessCalls, spoken, handsFree, reply, phase } = setup()
+    handsFree.start()
+    await reply('mi respuesta')
+    assessCalls[0].reject(new Error('boom'))
+    await settle()
+    expect(spoken.slice(1)).toEqual(['back a', "Couldn't check.", HINT])
+    expect(phase()).toBe('listening-command')
   })
 
   it('never pays for a check on an idle slot', async () => {
@@ -217,11 +237,12 @@ describe('HandsFree', () => {
     expect(phase()).toBe('listening-command')
   })
 
-  it('"undo" right after a grade goes back and reads the card again', async () => {
+  it('"undo" on the next revealed card goes back and reads the card again', async () => {
     const { session, spoken, handsFree, reply } = setup({ grading: false })
     handsFree.start()
     await reply('mi respuesta')
     await reply('good')
+    await reply('otra respuesta')
     await reply('undo')
     expect(session.getState()).toMatchObject({ index: 0, history: [] })
     expect(spoken.filter((text) => text === 'back a')).toHaveLength(2)
@@ -237,7 +258,7 @@ describe('HandsFree', () => {
     expect(session.getState().index).toBe(0)
     expect(spoken.at(-1)).toBe(HINT)
     await reply('good')
-    await reply('')
+    await reply('') // at the end again
     expect(phase()).toBe('off')
   })
 
@@ -296,11 +317,10 @@ describe('HandsFree', () => {
     expect(speak).not.toHaveBeenCalled()
   })
 
-  it('"stop" in the undo window stops; a failed undo there pauses', async () => {
+  it('"stop" while asking for a grade stops; a failed undo pauses', async () => {
     const stopping = setup({ grading: false })
     stopping.handsFree.start()
     await stopping.reply('mi respuesta')
-    await stopping.reply('good')
     await stopping.reply('stop')
     expect(stopping.phase()).toBe('off')
 
@@ -309,6 +329,7 @@ describe('HandsFree', () => {
     failing.handsFree.start()
     await failing.reply('mi respuesta')
     await failing.reply('good')
+    await failing.reply('otra respuesta')
     await failing.reply('undo')
     expect(failing.handsFree.getState()).toMatchObject({ phase: 'paused', message: "Couldn't save." })
   })
@@ -324,8 +345,7 @@ describe('HandsFree', () => {
       await reply('mi respuesta')
       if (command === 'undo') {
         await reply('good')
-        await reply('') // the undo window passes; now on the next card
-        await reply('mi respuesta')
+        await reply('otra respuesta')
       }
       await reply(command)
       handsFree.stop()

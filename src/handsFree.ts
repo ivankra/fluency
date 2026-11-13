@@ -1,22 +1,20 @@
-// Hands-free study: reads the card, listens to the answer, reads the feedback and
-// takes the grade as a spoken command. Drives the Session through its public actions,
+// Hands-free study: reads the card, listens to the answer, says the grade and moves on
+// (or takes the grade as a spoken command when the answer wasn't checked). Drives the Session through its public actions,
 // like the keyboard does. Speech I/O is injected, so it is tested without a browser
 // (handsFree.test.ts). Design: doc/voice.md.
 import type { Session, Slot } from './check'
 import { GRADES, type Grade } from './db'
-import { showCorrected } from './grader'
 import { abortError, isAbort, SpeechError, type listen, type speak } from './speech'
 
 const ENGLISH = 'en-US' // the UI language: commands and announcements
 const HINT = 'Say good, fair or bad.'
 const gradeLabel = (grade: Grade) => GRADES.find((entry) => entry.grade === grade)!.label
 
-export type Command = { grade: Grade } | 'accept' | 'skip' | 'repeat' | 'undo' | 'stop'
+export type Command = { grade: Grade } | 'skip' | 'repeat' | 'undo' | 'stop'
 
 // Whole phrases, including common mishearings and digits.
 const PHRASES = new Map<string, Command>()
 const phrases = (command: Command, words: string[]) => words.forEach((word) => PHRASES.set(word, command))
-phrases('accept', ['yes', 'yeah', 'ok', 'okay', 'accept', 'next'])
 phrases({ grade: 3 }, ['good', 'three', '3'])
 phrases({ grade: 2 }, ['fair', 'fare', 'two', '2', 'to', 'too'])
 phrases({ grade: 1 }, ['bad', 'one', '1', 'won'])
@@ -204,73 +202,50 @@ export class HandsFree {
       return this.next()
     }
 
+    // Short feedback only, the rest stays on screen: the LLM's grade is taken as is.
     const rate = this.deps.rate()
-    await this.say(slot.card.back, languages.target, signal, rate)
     if (session.current?.check.status === 'pending') {
-      await this.say('Checking.', ENGLISH, signal)
       await this.checkSettled(signal)
       signal.throwIfAborted()
     }
-    const { check, answer, answerMode } = session.current!
-    let suggested: Grade | undefined
+    const { check } = session.current!
     if (check.status === 'done') {
-      const { assessment } = check
-      if (showCorrected(assessment, answer, answerMode)) {
-        if (answerMode === 'spoken') {
-          await this.say('You said:', ENGLISH, signal)
-          await this.say(answer, languages.target, signal, rate)
-        }
-        await this.say('Corrected:', ENGLISH, signal)
-        await this.say(assessment.corrected, languages.target, signal, rate)
-      }
-      await this.say(assessment.summary, languages.feedback, signal)
-      suggested = assessment.grade
-      await this.say(`Suggested: ${gradeLabel(suggested)}.`, ENGLISH, signal)
+      const { grade } = check.assessment
+      await this.say(`${gradeLabel(grade)}.`, ENGLISH, signal)
+      if (grade !== 3) await this.say(slot.card.back, languages.target, signal, rate)
+      if (await this.write(() => session.grade(grade), signal)) return this.next()
     } else {
+      await this.say(slot.card.back, languages.target, signal, rate)
       if (check.status === 'error') await this.say("Couldn't check.", ENGLISH, signal)
-      await this.say(HINT, ENGLISH, signal)
     }
-    await this.takeCommand(suggested, signal)
+    // No grade from the LLM (or another write was running): ask for one.
+    await this.say(HINT, ENGLISH, signal)
+    await this.takeCommand(signal)
   }
 
   // Listen for commands on a revealed card until one is carried out.
-  private async takeCommand(suggested: Grade | undefined, signal: AbortSignal) {
+  private async takeCommand(signal: AbortSignal) {
     const { session } = this.deps
     let hinted = false
     for (;;) {
       const command = await this.hear(signal)
       if (command === 'repeat') return this.next()
       if (command === 'stop') return this.stop()
-      if (command === 'accept' && !suggested) {
-        await this.say(HINT, ENGLISH, signal)
-        continue
-      }
       if (command === 'undo') {
         if (!session.getState().history.length) await this.say('Nothing to undo.', ENGLISH, signal)
         else if (await this.write(() => session.undo(), signal)) return this.next()
         continue
       }
       if (command) {
-        const grade = command === 'accept' ? suggested : command === 'skip' ? undefined : command.grade
+        const grade = command === 'skip' ? undefined : command.grade
         if (!(await this.write(() => (grade ? session.grade(grade) : session.skip()), signal))) continue
         await this.say(grade ? `${gradeLabel(grade)}.` : 'Skipped.', ENGLISH, signal)
-        return this.afterGrade(signal)
+        return this.next()
       }
       if (hinted) return this.halt('paused', "Didn't catch a command.")
       hinted = true
       await this.say(HINT, ENGLISH, signal)
     }
-  }
-
-  // A brief chance to take back a misheard grade, or to stop. "Done" offers its own.
-  private async afterGrade(signal: AbortSignal) {
-    const { session } = this.deps
-    if (session.current) {
-      const command = await this.hear(signal)
-      if (command === 'stop') return this.stop()
-      if (command === 'undo') await this.write(() => session.undo(), signal)
-    }
-    this.next()
   }
 
   private async say(text: string, lang: string, signal: AbortSignal, rate = 1) {
