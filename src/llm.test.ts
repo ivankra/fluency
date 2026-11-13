@@ -3,9 +3,9 @@ import { clearLlmApiKey, getLlmApiKey, isLlmApiKeyRemembered, normalizeBaseUrl, 
 
 const store = new Map<string, string>()
 vi.stubGlobal('localStorage', {
-  getItem: (k: string) => store.get(k) ?? null,
-  setItem: (k: string, v: string) => store.set(k, v),
-  removeItem: (k: string) => store.delete(k),
+  getItem: (key: string) => store.get(key) ?? null,
+  setItem: (key: string, value: string) => store.set(key, value),
+  removeItem: (key: string) => store.delete(key),
 })
 
 beforeEach(() => {

@@ -67,19 +67,21 @@ export interface LlmSettings {
   gradingRules: string     // empty = DEFAULT_GRADING_RULES
 }
 
+export type ProviderSettings = Pick<LlmSettings, 'baseUrl' | 'model'>  // what a request needs
+
 export type LlmErrorKind = 'auth' | 'rate-limit' | 'network' | 'timeout' | 'http' | 'bad-response'
-export class LlmError extends Error { kind: LlmErrorKind; status?: number }
+export class LlmError extends Error { kind: LlmErrorKind }
 
 export interface LlmUsage { inputTokens?: number; outputTokens?: number; cost?: number }
 
 export function loadLlmSettings(): LlmSettings
-export function saveLlmSettings(s: LlmSettings): void
+export function saveLlmSettings(settings: LlmSettings): void
 export function getLlmApiKey(baseUrl: string): string | null  // null if saved for another URL
 export function setLlmApiKey(baseUrl: string, key: string, remember: boolean): void
 export function clearLlmApiKey(): void
 
-export async function fetchChatCompletion(s: LlmSettings, apiKey: string, body: object,
-  signal: AbortSignal): Promise<{ text: string; model?: string; usage?: LlmUsage }>
+export async function fetchChatCompletion(settings: ProviderSettings, apiKey: string,
+  body: object, signal: AbortSignal): Promise<{ text: string; model?: string; usage?: LlmUsage }>
 ```
 
 - **Request:** `POST {baseUrl}/chat/completions`, `Authorization: Bearer <key>`, body
@@ -91,15 +93,17 @@ export async function fetchChatCompletion(s: LlmSettings, apiKey: string, body: 
 - **Timeout:** 30 s, combined with the caller's signal; reported as `timeout`, distinct
   from cancelling.
 - **Errors:** `fetch` `TypeError` → `network` (offline, wrong URL and CORS look the
-  same, so the message names all three); 401/403 → `auth`; 429 → `rate-limit`; other
-  non-2xx → `http` with status (402 gets an "out of credits" message); `finish_reason`
+  same, so the message names all three); 401/403, 402 (out of credits) and 404 (wrong
+  URL or model) → `auth`, meaning the fix is in settings; 429 → `rate-limit`; other
+  non-2xx → `http` with status. HTTP errors include the provider's own error message,
+  shortened, which makes Test connection useful for a wrong model name. `finish_reason`
   other than `stop`, a refusal, or no message content → `bad-response`.
 - **Usage:** token counts and cost, if the response reports them, are returned for the
   evaluation script; they aren't stored with reviews.
-- **Settings:** one JSON value in `localStorage` (`fluency.llm`), accessed in
+- **Settings:** one JSON value in `localStorage` (`fluency:llm`), accessed in
   try/catch like the sample-deck flag.
 - **The key** is stored with the normalized base URL it was entered for, in
-  `localStorage` (`fluency.llmKey`) if "Remember on this device" is ticked (the
+  `localStorage` (`fluency:llm-key`) if "Remember on this device" is ticked (the
   default), otherwise in memory until the app closes. `getLlmApiKey` returns `null`
   for any other URL, and changing the provider or base URL clears the key, so it can
   never be sent to a server it wasn't entered for. Unticking "Remember" deletes the
@@ -120,7 +124,7 @@ export interface GradingInput {
   sourceLanguage: string   // BCP 47
   targetLanguage: string
   feedbackLanguage: string
-  gradingRules: string     // rules in effect (empty replaced with the default)
+  gradingRules: string     // the user's rules; empty means DEFAULT_GRADING_RULES
   source: string           // card.front
   reference: string        // card.back
   answer: string           // submitted answer, trimmed
@@ -139,9 +143,17 @@ export interface Assessment {
   corrected: string           // answer with minimal fixes; unchanged if none
 }
 
-export function buildGradingRequest(input: GradingInput, model: string): object
+// What a review stores: the assessment plus what produced it.
+export interface ReviewAssessment extends Assessment {
+  promptVersion: number
+  model: string          // requested
+  returnedModel?: string // reported by the provider
+  input: GradingInput
+}
+
+export function buildGradingRequest(input: GradingInput): object  // model added by the request
 export function parseAssessment(text: string): Assessment  // throws LlmError('bad-response')
-export async function assessAnswer(input: GradingInput, s: LlmSettings, apiKey: string,
+export async function assessAnswer(input: GradingInput, settings: ProviderSettings, apiKey: string,
   signal: AbortSignal): Promise<{ assessment: Assessment; model?: string; usage?: LlmUsage }>
 ```
 
@@ -259,15 +271,17 @@ these rules:
 - **Edits** invalidate every queued and parked copy of the card; re-checking is
   explicit.
 
-**The controller** is plain code in `check.ts` with `assessAnswer`, `recordReview`
-and the clock injected. It does all the I/O; components and React state updaters
-don't. Its actions (submit, accept, grade, skip, undo, edit, check) are the only way
-to drive a session: keyboard, buttons and later voice all call them. It reports state
-through a callback that a small hook connects to React state. Two synchronous guards:
+**The controller** is the `Session` class in `check.ts`. The grader, the database
+writes, the online flag and the clock are injected, so it is tested without React.
+It does all the I/O; components and React state updaters don't. Its actions (submit,
+check, accept, grade, skip, undo, edit) are the only way to drive a session:
+keyboard, buttons and later voice all call them. `Study` subscribes to its state with
+`useSyncExternalStore`. Two synchronous guards:
 
 - **One request per slot**, so a double Enter starts one request.
 - **One database write at a time** across grade, skip, undo and edit. While a write is
-  in flight, other writes are refused. Checks are network only, so grading, skipping and editing stay available while a check is pending.
+  in flight, other writes are refused. Checks are network only, so grading, skipping
+  and editing stay available while a check is pending.
 
 ## Study flow
 
@@ -281,9 +295,9 @@ The reveal stays immediate; grading runs alongside it.
    `navigator.onLine` is false, no automatic request is made; the slot stays `idle`
    with the Check button, which works whenever the user is back online, or if the
    flag was wrong.
-3. On success the panel shows the summary, the errors and suggestions labelled by
-   kind, and the corrected sentence if it differs (with a word-level diff if that's
-   cheap). The suggested grade button is highlighted.
+3. On success the panel shows the summary, the corrected sentence if it differs from
+   the answer, then the errors and suggestions labelled by kind. The suggested grade
+   button is highlighted.
 4. Accept or override; `recordReview` saves the final grade, and the assessment if the
    check is `done`.
 5. The next card appears **only after the write succeeds**. On failure the user stays
@@ -329,7 +343,7 @@ Route `#/settings`, linked from the deck-list header.
   your answer and the deck's languages to the provider you chose." The README's "All
   data stays on your device" changes to match.
 
-**First-run card:** while no key is set, the deck list shows a dismissible "Get
+**First-run card:** while grading is on and no key is set, the deck list shows a dismissible "Get
 feedback on your translations: set up LLM grading" linking here. Dismissal is kept in
 `localStorage`.
 
@@ -350,19 +364,11 @@ records that lack them.
 
 | Entity | New field | Notes |
 |---|---|---|
-| `Deck` | `sourceLanguage?`, `targetLanguage?` (BCP 47) | Set in the deck view next to rename, saved like a rename (updates `updatedAt`). New decks start with the last-used source language. New sample decks are set (`en` → `es`, `zh-CN`, `ja`); existing decks stay manual until the user sets them, with no guessing. |
+| `Deck` | `sourceLanguage?`, `targetLanguage?` (BCP 47) | Set in the deck view, saved like a rename (updates `updatedAt`). The editor starts with the last-used source language. New sample decks are set (`en` → `es`, `zh-CN`, `ja`); existing decks stay manual until the user sets them, with no guessing. |
 | `Review` | `assessment?: ReviewAssessment` | Only if the check was `done` at commit. `review.grade` stays the user's final grade; comparing it with `assessment.grade` shows overrides. |
 
-```ts
-interface ReviewAssessment extends Assessment {
-  promptVersion: number
-  model: string          // requested
-  returnedModel?: string // reported by the provider
-  input: GradingInput    // what was graded, so later card edits don't change its meaning
-}
-```
-
-Metadata comes from the `CheckRequest` snapshot. An assessment is about 1 KB, so
+`ReviewAssessment` (in `grader.ts`) keeps the input that was graded, so later card
+edits don't change its meaning; its metadata comes from the `CheckRequest` snapshot. An assessment is about 1 KB, so
 10,000 reviews add about 10 MB to a backup; if that matters later, `input.source` and
 `input.reference` can be dropped when they match the card. Code reading stored
 assessments handles older shapes: fields added later are optional, and an unknown
@@ -423,7 +429,7 @@ cost and latency come from the evaluation, which picks the default model.
 No rendering tests (no jsdom, React Testing Library or fake-indexeddb); the hook and
 component wiring is checked by hand on the three platforms.
 
-**Evaluation** (manual; never in CI or `make test`): `doc/eval/grading-cases.json`
+**Evaluation** (manual; never in CI or `make test`): `eval/grading-cases.json`
 holds 30–50 human-reviewed cases:
 
 ```json
@@ -441,11 +447,12 @@ embedded in the answer. A few cases repeat with a custom `gradingRules` to check
 the rules move the grade. Cases marked `critical` (negation, reversed meaning, valid
 paraphrase) must pass.
 
-A vitest-run script calls `assessAnswer` (the production path) with `LLM_BASE_URL`,
+`make eval` runs `eval/grading.eval.ts` (its own Vitest config, so never part of
+`make test`). It calls `assessAnswer` (the production path) with `LLM_BASE_URL`,
 `LLM_API_KEY` and `LLM_MODELS` (comma-separated), and reports per model and per
 language: agreement with `expected`, good↔bad swaps, validation failures, median and
 p90 latency, and tokens and cost where reported. It also saves every assessment to
-JSON so the feedback text can be compared across models and prompt versions.
+`eval/results/` so the feedback text can be compared across models and prompt versions.
 
 **Quality bar for the default model:** every critical case passes, no good↔bad swaps,
 and at least 80% agreement in *each* language, so a weak language can't hide in the

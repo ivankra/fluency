@@ -2,9 +2,10 @@
 // Each card is [front (English prompt), back (target-language sentence)].
 import { addCard, addDeck, listDecks } from './db'
 
-const SAMPLE_DECKS: { name: string; cards: [string, string][] }[] = [
+const SAMPLE_DECKS: { name: string; targetLanguage: string; cards: [string, string][] }[] = [
   {
     name: 'Spanish',
+    targetLanguage: 'es',
     cards: [
       ['Hello, how are you?', 'Hola, ¿cómo estás?'],
       ['My name is Ana.', 'Me llamo Ana.'],
@@ -20,6 +21,7 @@ const SAMPLE_DECKS: { name: string; cards: [string, string][] }[] = [
   },
   {
     name: 'Chinese',
+    targetLanguage: 'zh-CN',
     cards: [
       ['Hello, how are you?', '你好，你好吗？'],
       ['My name is Ana.', '我叫安娜。'],
@@ -35,6 +37,7 @@ const SAMPLE_DECKS: { name: string; cards: [string, string][] }[] = [
   },
   {
     name: 'Japanese',
+    targetLanguage: 'ja',
     cards: [
       ['Hello, how are you?', 'こんにちは、お元気ですか？'],
       ['My name is Ana.', 'アナです。'],
@@ -62,8 +65,8 @@ export async function seedSampleDecks() {
   }
 
   if ((await listDecks()).length === 0) {
-    for (const { name, cards } of SAMPLE_DECKS) {
-      const deck = await addDeck(name)
+    for (const { name, targetLanguage, cards } of SAMPLE_DECKS) {
+      const deck = await addDeck(name, { sourceLanguage: 'en', targetLanguage })
       for (const [front, back] of cards) await addCard(deck.id, front, back)
     }
   }

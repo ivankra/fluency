@@ -3,10 +3,13 @@
 // Every entity has a unique `id` and an `updatedAt` timestamp (ms), so Google Drive
 // sync can detect conflicts now and merge per-entity later.
 import Dexie, { type EntityTable } from 'dexie'
+import type { ReviewAssessment } from './grader'
 
 export interface Deck {
   id: string
   name: string
+  sourceLanguage?: string // BCP 47 tags; both are needed for LLM grading
+  targetLanguage?: string
   updatedAt: number
 }
 
@@ -42,7 +45,8 @@ export interface Review {
   cardId: string
   at: number
   grade: Grade
-  answer?: string // what the user typed/said, once we have LLM grading
+  answer?: string // what the user typed
+  assessment?: ReviewAssessment // the LLM's suggestion, if it was checked; grade is the user's final say
 }
 
 export interface Backup {
@@ -81,14 +85,20 @@ export const listDecks = () => db.decks.toCollection().sortBy('name')
 
 export const getDeck = async (id: string) => (await db.decks.get(id)) ?? null
 
-export async function addDeck(name: string): Promise<Deck> {
-  const deck = { id: newId(), name, updatedAt: Date.now() }
+export async function addDeck(
+  name: string,
+  languages?: Pick<Deck, 'sourceLanguage' | 'targetLanguage'>,
+): Promise<Deck> {
+  const deck = { id: newId(), name, ...languages, updatedAt: Date.now() }
   await db.decks.add(deck)
   return deck
 }
 
 export const renameDeck = (id: string, name: string) =>
   db.decks.update(id, { name, updatedAt: Date.now() })
+
+export const setDeckLanguages = (id: string, sourceLanguage: string, targetLanguage: string) =>
+  db.decks.update(id, { sourceLanguage, targetLanguage, updatedAt: Date.now() })
 
 export const deleteDeck = (id: string) =>
   db.transaction('rw', db.decks, db.cards, db.reviews, async () => {
@@ -131,11 +141,16 @@ export const countDueCards = (deckId: string, now = Date.now()) => dueCards(deck
 
 // Log an attempt and store the card's new schedule atomically.
 // The caller (scheduler) computes `sched` from the grade.
-export const recordReview = (card: Card, grade: Grade, sched: Sched, answer?: string) =>
+export const recordReview = (
+  card: Card,
+  grade: Grade,
+  sched: Sched,
+  extra: { answer?: string; assessment?: ReviewAssessment } = {},
+) =>
   db.transaction('rw', db.cards, db.reviews, async () => {
     const now = Date.now()
     const id = newId()
-    await db.reviews.add({ id, cardId: card.id, at: now, grade, answer })
+    await db.reviews.add({ id, cardId: card.id, at: now, grade, ...extra })
     await db.cards.update(card.id, { sched, updatedAt: now })
     return id
   })

@@ -1,8 +1,10 @@
 import { useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { GRADES, addCard, deleteCard, deleteDeck, editCard, getDeck, gradeCounts, listCards, renameDeck, type Card, type Sched } from './db'
+import { GRADES, addCard, deleteCard, deleteDeck, editCard, getDeck, gradeCounts, listCards, renameDeck, setDeckLanguages, type Card, type Deck, type Sched } from './db'
 import { exportDeckCsv } from './exportFile'
 import CardForm from './CardForm'
+import LanguagePicker from './LanguagePicker'
+import { languageName } from './languages'
 import { href } from './route'
 import { DAY, HOUR, MINUTE } from './time'
 
@@ -73,6 +75,79 @@ function CardRow({ card, counts }: { card: Card; counts?: number[] }) {
         </button>
       </div>
     </li>
+  )
+}
+
+const LAST_SOURCE_KEY = 'fluency:last-source-language'
+
+function lastSourceLanguage() {
+  try {
+    return localStorage.getItem(LAST_SOURCE_KEY) || 'en'
+  } catch {
+    return 'en'
+  }
+}
+
+// The deck's source and target languages, which LLM grading needs.
+function DeckLanguages({ deck }: { deck: Deck }) {
+  const [editing, setEditing] = useState(false)
+  const [source, setSource] = useState('')
+  const [target, setTarget] = useState('')
+
+  const start = () => {
+    setSource(deck.sourceLanguage ?? lastSourceLanguage())
+    setTarget(deck.targetLanguage ?? '')
+    setEditing(true)
+  }
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!source || !target) return
+    await setDeckLanguages(deck.id, source, target)
+    try {
+      localStorage.setItem(LAST_SOURCE_KEY, source)
+    } catch {
+      // Only a default for the next deck.
+    }
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <form className="panel card-form" onSubmit={save}>
+        <label>
+          <span>From (your language)</span>
+          <LanguagePicker value={source} onChange={setSource} label="From" />
+        </label>
+        <label>
+          <span>To (the language you're learning)</span>
+          <LanguagePicker value={target} onChange={setTarget} label="To" />
+        </label>
+        <div className="card-form__actions">
+          <button type="button" className="btn" onClick={() => setEditing(false)}>
+            Cancel
+          </button>
+          <button className="btn btn--primary" disabled={!source || !target}>
+            Save
+          </button>
+        </div>
+      </form>
+    )
+  }
+
+  const set = deck.sourceLanguage && deck.targetLanguage
+  return (
+    <div className="toolbar">
+      <span className="muted">
+        {set
+          ? `${languageName(deck.sourceLanguage!)} → ${languageName(deck.targetLanguage!)}`
+          : 'Languages not set (needed for LLM grading)'}
+      </span>
+      <span className="toolbar__spacer" />
+      <button className="btn btn--small" onClick={start}>
+        {set ? 'Change languages' : 'Set languages'}
+      </button>
+    </div>
   )
 }
 
@@ -149,6 +224,8 @@ export default function DeckView({ deckId }: { deckId: string }) {
           Delete deck
         </button>
       </div>
+
+      <DeckLanguages deck={deck} />
 
       <section className="panel">
         <h2>Add a card</h2>

@@ -1,154 +1,107 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import CardForm from './CardForm'
-import { GRADES, editCard, getDueCards, recordReview, skipCard, undoAttempt, type Card, type Grade } from './db'
-import { schedule, skip } from './scheduler'
+import Feedback from './Feedback'
+import { Session, type Grader } from './check'
+import { GRADES, editCard, getDeck, getDueCards, recordReview, skipCard, undoAttempt, type Deck, type Grade } from './db'
+import { assessAnswer } from './grader'
+import { getLlmApiKey, loadLlmSettings, type LlmSettings } from './llm'
 import { href } from './route'
-
-// A failed card is requeued this many times at most per session, so it can't loop forever.
-const MAX_RETRIES = 2
 
 const GRADE_CLASS: Record<Grade, string> = { 1: 'btn btn--danger', 2: 'btn', 3: 'btn btn--primary' }
 
-// A queue entry: the card plus what the user has typed for it and whether the answer is
-// shown. Keeping this per entry means going back (undo) finds the text where it was left.
-interface Slot {
-  card: Card
-  answer: string
-  revealed: boolean
-}
-
-const slotFor = (card: Card): Slot => ({ card, answer: '', revealed: false })
-
-// A finished review or skip, kept so it can be undone.
-interface Attempt {
-  card: Card // as it was before, i.e. with the old schedule
-  reviewId?: string
-  requeued: boolean // a retry copy was appended to the queue
+// Grading needs it enabled, an API key, and the deck's languages.
+function makeGrader(settings: LlmSettings, deck: Deck | null | undefined): Grader | null {
+  const apiKey = getLlmApiKey(settings.baseUrl)
+  if (!settings.enabled || !apiKey || !deck?.sourceLanguage || !deck.targetLanguage) return null
+  return {
+    model: settings.model,
+    context: {
+      sourceLanguage: deck.sourceLanguage,
+      targetLanguage: deck.targetLanguage,
+      feedbackLanguage: settings.feedbackLanguage,
+      gradingRules: settings.gradingRules,
+    },
+    assess: (input, signal) => assessAnswer(input, settings, apiKey, signal),
+  }
 }
 
 export default function Study({ deckId }: { deckId: string }) {
-  // The queue is a snapshot taken on entry, so cards don't shuffle while we work through it.
-  const [queue, setQueue] = useState<Slot[] | null>(null)
-  const [index, setIndex] = useState(0)
-  const [busy, setBusy] = useState(false)
+  const deck = useLiveQuery(() => getDeck(deckId), [deckId])
+  const deckRef = useRef(deck)
+  deckRef.current = deck
+  // Settings only change on the settings screen, so reading them once is enough.
+  const [settings] = useState(loadLlmSettings)
+  const [session] = useState(
+    () =>
+      new Session({
+        grader: () => makeGrader(settings, deckRef.current),
+        isOnline: () => navigator.onLine,
+        now: Date.now,
+        recordReview,
+        skipCard,
+        undoAttempt,
+        editCard,
+      }),
+  )
+  const { queue, index, history, writing, saveError } = useSyncExternalStore(session.subscribe, session.getState)
   const [editing, setEditing] = useState(false)
-  const [history, setHistory] = useState<Attempt[]>([])
-  const retries = useRef(new Map<string, number>())
-  // Retry entry dropped by an undo, so its typed text returns if the card fails again.
-  const parked = useRef<Slot | null>(null)
 
+  // The queue is a snapshot taken on entry, so cards don't shuffle while we work.
   useEffect(() => {
     let stale = false
-    getDueCards(deckId).then((cards) => !stale && setQueue(cards.map(slotFor)))
+    getDueCards(deckId).then((cards) => !stale && session.load(cards))
     return () => {
       stale = true
+      session.dispose()
     }
-  }, [deckId])
+  }, [deckId, session])
 
   const slot = queue?.[index]
-  const card = slot?.card
-  const answer = slot?.answer ?? ''
-  const revealed = slot?.revealed ?? false
+  const check = slot?.check
+  const suggested = check?.status === 'done' ? check.assessment.grade : undefined
+  const canCheck = makeGrader(settings, deck) !== null
+  const missingLanguages =
+    settings.enabled && !!getLlmApiKey(settings.baseUrl) && !!deck && !(deck.sourceLanguage && deck.targetLanguage)
 
-  const patch = (p: Partial<Slot>) =>
-    setQueue((q) => q && q.map((s, i) => (i === index ? { ...s, ...p } : s)))
-
-  // Run a db write for the current card, remember it for undo, then move on.
-  // `busy` blocks double taps.
-  const finish = async (write: (card: Card) => Promise<Pick<Attempt, 'reviewId' | 'requeued'>>) => {
-    if (!card || busy) return
-    setBusy(true)
-    try {
-      const done = await write(card)
-      setHistory([...history, { card, ...done }])
-      setIndex(index + 1)
-    } finally {
-      setBusy(false)
-    }
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    session.submit()
   }
 
-  const grade = (g: Grade) =>
-    finish(async (c) => {
-      const sched = schedule(c.sched, g)
-      const reviewId = await recordReview(c, g, sched, answer.trim() || undefined)
-      // interval 0 means the card is back to (re)learning: show it again this session.
-      const tries = retries.current.get(c.id) ?? 0
-      const requeued = sched.interval === 0 && tries < MAX_RETRIES
-      if (requeued) {
-        retries.current.set(c.id, tries + 1)
-        const kept = parked.current?.card.id === c.id ? parked.current : slotFor(c)
-        parked.current = null
-        setQueue((q) => q && [...q, { ...kept, card: { ...c, sched } }])
-      }
-      return { reviewId, requeued }
-    })
-
-  const skipCurrent = () =>
-    finish(async (c) => {
-      await skipCard(c, skip(c.sched))
-      return { requeued: false }
-    })
-
-  // Go back to the previous card exactly as it was: typed text and answer shown.
-  const undo = async () => {
-    const last = history.at(-1)
-    if (!last || busy) return
-    setBusy(true)
-    try {
-      await undoAttempt(last.card.id, last.card.sched, last.reviewId)
-      if (last.requeued) {
-        retries.current.set(last.card.id, (retries.current.get(last.card.id) ?? 1) - 1)
-        parked.current = queue?.at(-1) ?? null
-        setQueue((q) => q && q.slice(0, -1))
-      }
-      setHistory(history.slice(0, -1))
-      setIndex(index - 1)
-      setEditing(false)
-    } finally {
-      setBusy(false)
-    }
+  // Enter submits; Shift+Enter adds a newline. Enter that confirms an IME composition
+  // (Chinese/Japanese input) must not count.
+  const onAnswerKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) submit(event)
   }
 
-  // Fix a typo mid-session. Our snapshot of the card is updated too, so the fix shows at once.
+  // Close the editor only once the edit is saved; a refused or failed save keeps it open.
   const saveEdit = async (front: string, back: string) => {
-    if (!card || !queue) return
-    await editCard(card.id, front, back)
-    setQueue(queue.map((s) => (s.card.id === card.id ? { ...s, card: { ...s.card, front, back } } : s)))
-    setEditing(false)
+    if (await session.saveEdit(front, back)) setEditing(false)
   }
 
-  const reveal = (e: FormEvent) => {
-    e.preventDefault()
-    patch({ revealed: true })
-  }
-
-  // Enter reveals the answer; Shift+Enter adds a newline. Enter that confirms an IME
-  // composition (Chinese/Japanese input) must not count.
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) reveal(e)
-  }
-
-  // Keyboard, never while typing in a text field. Once Enter has revealed the answer
-  // nothing is focused for typing, so: 1/2/3 grade, Space = Good, "-" skips (as Anki
-  // buries). Ctrl/Cmd+Z undoes; inside the textarea it stays the browser's text undo.
+  // Keyboard, never while typing in a text field. After the reveal: 1/2/3 grade,
+  // Space/Enter accept the suggestion (Good without one, nothing while checking),
+  // "-" skips. Ctrl/Cmd+Z undoes; in the textarea it stays the browser's text undo.
   useEffect(() => {
     if (editing) return
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      const target = e.target as HTMLElement
-      if (e.repeat || e.altKey || target.matches('textarea, input')) return
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
-        e.preventDefault()
-        undo()
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      const target = event.target as HTMLElement
+      if (event.repeat || event.altKey || target.matches('textarea, input')) return
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
+        event.preventDefault()
+        session.undo()
         return
       }
-      if (!revealed || e.ctrlKey || e.metaKey) return
-      const hit = GRADES.find(({ grade: g }) => String(g) === e.key)
-      if (hit) grade(hit.grade)
-      else if (e.key === '-') skipCurrent()
-      // A focused button/link would also be "clicked" by Space, so leave it alone.
-      else if (e.key === ' ' && !target.matches('button, a')) {
-        e.preventDefault()
-        grade(3)
+      if (!slot?.revealed || event.ctrlKey || event.metaKey) return
+      const hit = GRADES.find(({ grade }) => String(grade) === event.key)
+      if (hit) session.grade(hit.grade)
+      else if (event.key === '-') session.skip()
+      // A focused button or link handles Space/Enter itself.
+      else if ((event.key === ' ' || event.key === 'Enter') && !target.matches('button, a')) {
+        event.preventDefault()
+        if (check?.status === 'done') session.accept()
+        else if (check?.status !== 'pending') session.grade(3)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -156,6 +109,7 @@ export default function Study({ deckId }: { deckId: string }) {
   })
 
   if (!queue) return null
+  const card = slot?.card
 
   return (
     <>
@@ -164,17 +118,17 @@ export default function Study({ deckId }: { deckId: string }) {
           ‹ Decks
         </a>
         <span className="bar__title muted">{card && `${index + 1} / ${queue.length}`}</span>
-        <button className="btn btn--small" disabled={!history.length || busy} onClick={undo}>
+        <button className="btn btn--small" disabled={!history.length || writing} onClick={() => session.undo()}>
           Undo
         </button>
         {card && (
-          <button className="btn btn--small" disabled={editing || busy} onClick={() => setEditing(true)}>
+          <button className="btn btn--small" disabled={editing || writing} onClick={() => setEditing(true)}>
             Edit card
           </button>
         )}
       </header>
 
-      {!card ? (
+      {!slot || !card ? (
         <p className="muted empty">{queue.length ? 'Done!' : 'Nothing due right now.'}</p>
       ) : editing ? (
         <section className="panel">
@@ -191,35 +145,37 @@ export default function Study({ deckId }: { deckId: string }) {
         <section className="panel study">
           <p className="study__prompt">{card.front}</p>
 
-          {revealed ? (
+          {slot.revealed ? (
             <>
-              {answer.trim() && (
-                <div>
-                  <span className="muted">Your answer</span>
-                  <p className="study__text">{answer}</p>
-                </div>
-              )}
-              <div>
-                <span className="muted">Expected</span>
-                <p className="study__text study__expected">{card.back}</p>
-              </div>
+              <Feedback
+                slot={slot}
+                canCheck={canCheck}
+                missingLanguages={missingLanguages}
+                deckId={deckId}
+                onCheck={() => session.check()}
+              />
               <div className="study__actions">
-                {[...GRADES].reverse().map(({ grade: g, label }) => (
-                  <button key={g} className={GRADE_CLASS[g]} disabled={busy} onClick={() => grade(g)}>
-                    {label} <kbd>{g}</kbd>
+                {[...GRADES].reverse().map(({ grade, label }) => (
+                  <button
+                    key={grade}
+                    className={`${GRADE_CLASS[grade]}${grade === suggested ? ' btn--suggested' : ''}`}
+                    disabled={writing}
+                    onClick={() => session.grade(grade)}
+                  >
+                    {label} <kbd>{grade}</kbd>
                   </button>
                 ))}
-                <button className="btn" disabled={busy} onClick={skipCurrent}>
+                <button className="btn" disabled={writing} onClick={() => session.skip()}>
                   Skip <kbd>-</kbd>
                 </button>
               </div>
             </>
           ) : (
-            <form className="study__form" onSubmit={reveal}>
+            <form className="study__form" onSubmit={submit}>
               <textarea
-                value={answer}
-                onChange={(e) => patch({ answer: e.target.value })}
-                onKeyDown={onKeyDown}
+                value={slot.answer}
+                onChange={(event) => session.setAnswer(event.target.value)}
+                onKeyDown={onAnswerKeyDown}
                 rows={3}
                 placeholder="Translate into the target language…"
                 aria-label="Your translation"
@@ -229,7 +185,7 @@ export default function Study({ deckId }: { deckId: string }) {
                 <button className="btn btn--primary">
                   Show answer <kbd>Enter</kbd>
                 </button>
-                <button type="button" className="btn" disabled={busy} onClick={skipCurrent}>
+                <button type="button" className="btn" disabled={writing} onClick={() => session.skip()}>
                   Skip
                 </button>
               </div>
@@ -237,6 +193,7 @@ export default function Study({ deckId }: { deckId: string }) {
           )}
         </section>
       )}
+      {saveError && <p className="feedback__error">{saveError}</p>}
     </>
   )
 }
