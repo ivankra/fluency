@@ -8,8 +8,8 @@ browser. Setup, commands and the file map are in [README.md](../README.md).
 
 Status: the basic loop, scheduling, storage, card editing/export, sample decks, LLM
 grading and voice are done. Drive sync and FSRS are not. LLM grading is designed in
-[llm-grading.md](llm-grading.md) and voice in [voice.md](voice.md); this document
-describes how they fit into the app.
+[llm-grading.md](llm-grading.md), voice in [voice.md](voice.md) and Drive sync in
+[drive-sync.md](drive-sync.md); this document describes how they fit into the app.
 
 ## Architecture
 
