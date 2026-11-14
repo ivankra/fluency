@@ -38,6 +38,13 @@ const isSwap = (result: Result) =>
   result.assessment !== undefined &&
   result.testCase.expected.every((acceptable) => Math.abs(acceptable - result.assessment!.grade) === 2)
 
+// Feedback items whose excerpt isn't quoted from the answer, so the UI shows a
+// "change" the learner never wrote.
+const misquotes = (result: Result) =>
+  [...(result.assessment?.errors ?? []), ...(result.assessment?.suggestions ?? [])].filter(
+    (item) => item.excerpt && !result.testCase.answer.toLowerCase().includes(item.excerpt.toLowerCase()),
+  ).length
+
 function summarize(results: Result[]) {
   const latencies = results.map((result) => result.latencyMs)
   return {
@@ -45,6 +52,7 @@ function summarize(results: Result[]) {
     swaps: results.filter(isSwap).length,
     criticalFails: results.filter((result) => result.testCase.critical && !agrees(result)).length,
     invalid: results.filter((result) => !result.assessment).length,
+    misquotes: results.reduce((sum, result) => sum + misquotes(result), 0),
     p50ms: percentile(latencies, 0.5),
     p90ms: percentile(latencies, 0.9),
     cost: results.reduce((sum, result) => sum + (result.cost ?? 0), 0).toFixed(4),
