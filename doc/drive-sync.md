@@ -102,7 +102,8 @@ export function deleteSyncFile(token: Token, id: string, signal: AbortSignal): P
 
 ### File format
 
-One file, `fluency-sync.json.gz`, in `appDataFolder`:
+One file, `fluency-sync.json.gz`, in `appDataFolder`, read and written by
+`src/syncFile.ts` (`encodeSyncFile`, `decodeSyncFile`, `parseSyncFile`):
 
 ```ts
 interface SyncFile {
@@ -144,12 +145,20 @@ Rules, applied in this order:
    JSON string, so both devices pick the same one.
 5. **Cards:** content (`front`, `back`, `deckId`, `updatedAt`) and schedule (`sched`)
    are merged separately, each by its own timestamp (`updatedAt` vs.
-   `sched.updatedAt`). A missing `sched.updatedAt` (cards written before this change)
-   counts as `updatedAt`.
+   `sched.updatedAt`); a tie compares only that part. A missing `sched.updatedAt`
+   (cards written before this change) is filled in with the card's `updatedAt`
+   *before* merging, so a schedule combined with another copy's text keeps its own
+   time; such cards are written back once with the timestamp.
 6. **Reviews** are immutable: union by id.
 
-`merge(a, merge(a, b))` equals `merge(a, b)`, and `merge(a, b)` equals `merge(b, a)`;
-the tests check both. Timestamps come from each device's clock: a clock that is far
+The merge assumes a card never moves to another deck and a review never to another
+card, which holds today. A "move card" feature would need a rule here.
+
+The tests check, on 300 random histories each, that `merge(a, b)` equals
+`merge(b, a)`, that merging the result again with either input changes nothing, and
+that three devices end up with the same items whichever two merge first. The times on
+cascaded tombstones can differ by order; they converge on the next merge, since the
+earliest wins. Timestamps come from each device's clock: a clock that is far
 off can win conflicts it shouldn't. That is accepted, since this is one person's
 devices, and conflicts only arise when the same item changes on two devices between
 syncs.
@@ -167,19 +176,22 @@ syncs.
 - **Change counter:** every write function bumps a counter in `localStorage`, and the
   engine compares it with the value at the last successful sync to know whether there
   is anything to upload. Dexie's `db.on('changes')` would also work, but it needs the
-  observable add-on; the counter is enough.
+  observable add-on; the counter is enough. Added with the engine (step 3), its only
+  user.
 - `snapshot()` reads all four tables in one transaction. `applyMerge(before, result)`
   writes only what differs from `before`, in one transaction, and **aborts if any
-  table changed since `before` was read**, in which case the engine runs the merge
-  again. Without that check, a review recorded during a sync could be overwritten by
-  the merged copy of its card.
+  table changed since `before` was read** (it re-reads and compares inside the
+  transaction), returning `false`; the engine then runs the merge again. Without that
+  check, a review recorded during a sync could be overwritten by the merged copy of
+  its card.
 - `importAll` (restore) is out of scope. When a restore UI is added, it has to decide
   whether the backup replaces Drive too; until then it is only used by tests.
 
 ### Sample decks
 
 - `seedSampleDecks` uses fixed ids (`sample-es`, `sample-es-1`, …) from now on, so new
-  installs merge their sample decks instead of duplicating them.
+  installs merge their sample decks instead of duplicating them. (Done in step 2; the
+  first-sync cleanup below belongs to the engine, step 3.)
 - Existing installs have random ids. On a device's **first** sync, if Drive already
   has a file, local decks that are untouched samples are deleted before merging. A
   deck counts as an untouched sample if its name and card fronts and backs match a
@@ -330,7 +342,9 @@ Three PRs, each ending with `make test` passing.
    flow works on all four platforms, or the iOS home-screen fallback is decided.
 2. **Data model and merge.** Tombstones, `sched.updatedAt`, fixed sample ids,
    `merge.ts`, file validation, `snapshot`/`applyMerge`, with tests. No UI; nothing
-   syncs yet.
+   syncs yet. *Status:* done: tombstones, `sched.updatedAt`, fixed sample ids,
+   `merge.ts`, `syncFile.ts` (gzip and validation), `snapshot`/`applyMerge`. The change
+   counter and the first-sync sample cleanup move to step 3.
 3. **Sync engine and UI.** `sync.ts`, Settings section, deck-list status, README and
    design.md updates.
 
