@@ -45,7 +45,7 @@ The service worker is off under `make dev`. To test installing the app or using 
 | `src/main.tsx` | Mounts React and seeds the sample decks on first run |
 | `src/App.tsx` | Root component: picks the screen from the URL |
 | `src/route.ts` | Hash router |
-| `src/db.ts` | On-device storage (IndexedDB via Dexie): decks, cards, reviews, backup |
+| `src/db.ts` | On-device storage (IndexedDB via Dexie): decks, cards, reviews, deletion records, backup (`db.test.ts`, on fake-indexeddb) |
 | `src/scheduler.ts` | The active scheduling algorithm behind one interface (`fsrs.test.ts`) |
 | `src/sm2.ts`, `src/fsrs.ts` | Simple SM-2 scheduler (`sm2.test.ts`) and FSRS via ts-fsrs |
 | `src/schedulerSettings.ts`, `src/SchedulingSettings.tsx` | Algorithm choice and FSRS options, and their settings section |

@@ -330,7 +330,8 @@ Three PRs, each ending with `make test` passing.
    flow works on all four platforms, or the iOS home-screen fallback is decided.
 2. **Data model and merge.** Tombstones, `sched.updatedAt`, fixed sample ids,
    `merge.ts`, file validation, `snapshot`/`applyMerge`, with tests. No UI; nothing
-   syncs yet.
+   syncs yet. *Status:* tombstones done (recorded by every delete, in backups, tested
+   on fake-indexeddb); the rest follows.
 3. **Sync engine and UI.** `sync.ts`, Settings section, deck-list status, README and
    design.md updates.
 

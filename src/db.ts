@@ -66,16 +66,26 @@ export interface Review {
   assessment?: ReviewAssessment // the LLM's suggestion, if it was checked; grade is the user's final say
 }
 
+// A record that something was deleted, so sync can delete it on other devices too
+// instead of bringing it back. Kept forever; each is a few dozen bytes.
+export interface Deletion {
+  id: string // the deleted deck, card or review
+  table: 'decks' | 'cards' | 'reviews'
+  at: number // ms
+}
+
 export interface Backup {
   decks: Deck[]
   cards: Card[]
   reviews: Review[]
+  deletions?: Deletion[] // missing in backups made before deletions were recorded
 }
 
 const db = new Dexie('fluency') as Dexie & {
   decks: EntityTable<Deck, 'id'>
   cards: EntityTable<Card, 'id'>
   reviews: EntityTable<Review, 'id'>
+  deletions: EntityTable<Deletion, 'id'>
 }
 
 // Only indexed fields are listed. Add a new version() block for schema changes.
@@ -84,6 +94,13 @@ db.version(1).stores({
   cards: 'id, deckId, [deckId+sched.due]',
   reviews: 'id, cardId, at',
 })
+db.version(2).stores({ deletions: 'id' })
+
+// Records deletions; call inside the transaction that deletes, so both happen or neither.
+const recordDeletions = (table: Deletion['table'], ids: string[]) => {
+  const at = Date.now()
+  return db.deletions.bulkPut(ids.map((id) => ({ id, table, at })))
+}
 
 const newId = () => crypto.randomUUID()
 
@@ -119,11 +136,15 @@ export const setDeckLanguages = (id: string, sourceLanguage: string, targetLangu
   db.decks.update(id, { sourceLanguage, targetLanguage, updatedAt: Date.now() })
 
 export const deleteDeck = (id: string) =>
-  db.transaction('rw', db.decks, db.cards, db.reviews, async () => {
+  db.transaction('rw', [db.decks, db.cards, db.reviews, db.deletions], async () => {
     const cardIds = await db.cards.where('deckId').equals(id).primaryKeys()
-    await db.reviews.where('cardId').anyOf(cardIds).delete()
+    const reviewIds = await db.reviews.where('cardId').anyOf(cardIds).primaryKeys()
+    await db.reviews.bulkDelete(reviewIds)
     await db.cards.bulkDelete(cardIds)
     await db.decks.delete(id)
+    await recordDeletions('reviews', reviewIds)
+    await recordDeletions('cards', cardIds)
+    await recordDeletions('decks', [id])
   })
 
 // --- Cards ---
@@ -141,9 +162,12 @@ export const editCard = (id: string, front: string, back: string) =>
   db.cards.update(id, { front, back, updatedAt: Date.now() })
 
 export const deleteCard = (id: string) =>
-  db.transaction('rw', db.cards, db.reviews, async () => {
-    await db.reviews.where('cardId').equals(id).delete()
+  db.transaction('rw', [db.cards, db.reviews, db.deletions], async () => {
+    const reviewIds = await db.reviews.where('cardId').equals(id).primaryKeys()
+    await db.reviews.bulkDelete(reviewIds)
     await db.cards.delete(id)
+    await recordDeletions('reviews', reviewIds)
+    await recordDeletions('cards', [id])
   })
 
 const dueCards = (deckId: string, now: number) =>
@@ -175,8 +199,12 @@ export const recordReview = (
 
 // Take back a review or skip: restore the card's old schedule and drop the review, if any.
 export const undoAttempt = (cardId: string, sched: Sched, reviewId?: string) =>
-  db.transaction('rw', db.cards, db.reviews, async () => {
-    if (reviewId) await db.reviews.delete(reviewId)
+  db.transaction('rw', [db.cards, db.reviews, db.deletions], async () => {
+    if (reviewId) {
+      await db.reviews.delete(reviewId)
+      // It may already have been synced to another device.
+      await recordDeletions('reviews', [reviewId])
+    }
     await db.cards.update(cardId, { sched, updatedAt: Date.now() })
   })
 
@@ -222,19 +250,23 @@ export async function gradeCounts(deckId: string) {
 // --- Backup (JSON export/import, also the basis for Drive sync) ---
 
 export const exportAll = (): Promise<Backup> =>
-  db.transaction('r', db.decks, db.cards, db.reviews, async () => ({
+  db.transaction('r', [db.decks, db.cards, db.reviews, db.deletions], async () => ({
     decks: await db.decks.toArray(),
     cards: await db.cards.toArray(),
     reviews: await db.reviews.toArray(),
+    deletions: await db.deletions.toArray(),
   }))
 
-// Replaces the entire local database.
+export const listDeletions = () => db.deletions.toArray()
+
+// Replaces the entire local database, deletion records included.
 export const importAll = (data: Backup) =>
-  db.transaction('rw', db.decks, db.cards, db.reviews, async () => {
-    await Promise.all([db.decks.clear(), db.cards.clear(), db.reviews.clear()])
+  db.transaction('rw', [db.decks, db.cards, db.reviews, db.deletions], async () => {
+    await Promise.all([db.decks.clear(), db.cards.clear(), db.reviews.clear(), db.deletions.clear()])
     await db.decks.bulkAdd(data.decks)
     await db.cards.bulkAdd(data.cards)
     await db.reviews.bulkAdd(data.reviews)
+    await db.deletions.bulkAdd(data.deletions ?? [])
   })
 
 // Ask the browser not to evict our data under storage pressure (matters on iOS/Safari).
