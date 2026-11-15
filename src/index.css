@@ -590,3 +590,15 @@ select {
 .drive-actions {
   flex-wrap: wrap;
 }
+
+/* Drive sync status under the deck list's header. */
+.sync-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -8px 0 12px;
+  font-size: 13px;
+  text-align: right;
+}

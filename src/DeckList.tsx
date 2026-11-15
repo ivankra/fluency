@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { addDeck, countDueCards, listDecks, type Deck } from './db'
+import { SyncStatusLine } from './DriveSettings'
 import { exportBackupJson } from './exportFile'
 import { getLlmApiKey, loadLlmSettings } from './llm'
 import { href } from './route'
@@ -87,6 +88,7 @@ export default function DeckList() {
           ⚙︎
         </a>
       </header>
+      <SyncStatusLine />
 
       <SetupCard />
 

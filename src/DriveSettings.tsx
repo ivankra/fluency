@@ -1,155 +1,144 @@
-// Google Drive: sign in and read/write a test file. Temporary, for checking the sign-in
-// flow on each platform before sync is built (doc/drive-sync.md, Rollout step 1).
-import { useEffect, useRef, useState } from 'react'
-import {
-  currentToken,
-  deleteFile,
-  downloadFile,
-  findFiles,
-  forgetToken,
-  isDriveConfigured,
-  isGoogleAuthLoaded,
-  loadGoogleAuth,
-  requestToken,
-  uploadFile,
-  type Token,
-} from './gdrive'
-import { isIosHomeScreenApp } from './speech'
+// Settings → Google Drive sync: connect, status, sync now, disconnect. Design:
+// doc/drive-sync.md.
+import { useEffect, useState, useSyncExternalStore } from 'react'
+import { syncEngine } from './driveSync'
+import { isDriveConfigured, isGoogleAuthLoaded, loadGoogleAuth } from './gdrive'
+import type { SyncStatus } from './sync'
+import { href } from './route'
+import { formatAgo } from './time'
 
-const TEST_FILE = 'fluency-test.json'
+export const PRIVACY_NOTE =
+  "Your decks, cards and review history, including your answers and feedback, are stored in a hidden app folder in your Google Drive. Fluency can't see your other files. Settings and your LLM API key are not synced."
 
-const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+// Google's script must be loaded before a tap that signs in (gdrive.ts).
+export function useGoogleAuthReady() {
+  const [ready, setReady] = useState(isGoogleAuthLoaded)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    loadGoogleAuth().then(
+      () => live && setReady(true),
+      (failure) => live && setError(failure instanceof Error ? failure.message : String(failure)),
+    )
+    return () => void (live = false)
+  }, [])
+  return { ready, error }
+}
 
-// Where this runs, so test results can be told apart across platforms.
-const environment = () =>
-  `${isIosHomeScreenApp() || matchMedia('(display-mode: standalone)').matches ? 'installed app' : 'browser tab'}, ${navigator.userAgent}`
+export function describeSync(status: SyncStatus, now = Date.now()): string {
+  const last = 'lastSyncAt' in status && status.lastSyncAt ? ` Last synced ${formatAgo(now - status.lastSyncAt)}.` : ''
+  switch (status.state) {
+    case 'off':
+      return 'Not connected.'
+    case 'idle':
+      return status.lastSyncAt ? `Synced ${formatAgo(now - status.lastSyncAt)}.` : 'Connected.'
+    case 'syncing':
+      return `Syncing…${last}`
+    case 'paused':
+      return status.reason === 'offline'
+        ? `Offline; syncs when you're back online.${last}`
+        : `Paused: Google sign-in expired. Tap Sync now to continue.${last}`
+    case 'error':
+      return `${status.message}${last}`
+  }
+}
 
 export default function DriveSettings() {
   if (!isDriveConfigured()) return null
-  return <DriveTest />
+  return <DriveSync />
 }
 
-function DriveTest() {
-  const [loaded, setLoaded] = useState(isGoogleAuthLoaded)
-  const [token, setToken] = useState<Token | null>(() => currentToken())
+function DriveSync() {
+  const status = useSyncExternalStore(syncEngine.subscribe, syncEngine.getStatus)
+  const google = useGoogleAuthReady()
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState('')
-  const running = useRef<AbortController | null>(null)
+  const [note, setNote] = useState('')
+  const connected = status.state !== 'off'
 
-  // Load Google's script now, so Connect can open its popup straight from the tap.
-  useEffect(() => {
-    loadGoogleAuth().then(
-      () => setLoaded(true),
-      (error) => setStatus(errorText(error)),
-    )
-    return () => running.current?.abort()
-  }, [])
-
-  // Not async before requestToken: the popup must open within the tap.
-  const connect = (prompt: 'consent' | '') => {
-    setStatus('Waiting for Google…')
-    requestToken(prompt).then(
-      (granted) => {
-        setToken(granted)
-        setStatus('Connected.')
-      },
-      (error) => setStatus(errorText(error)),
-    )
+  // Each starts with the sign-in call (inside the engine) before any await.
+  const act = (action: () => Promise<void>, done = '') => {
+    setNote('')
+    setBusy(true)
+    action().then(
+      () => setNote(done),
+      (error) => setNote(error instanceof Error ? error.message : String(error)),
+    ).finally(() => setBusy(false))
   }
 
   const disconnect = () => {
-    forgetToken()
-    setToken(null)
-    setStatus('Disconnected. Files in Drive are kept.')
+    if (!confirm('Stop syncing on this device? Your data stays on this device and in Google Drive.')) return
+    syncEngine.disconnect()
+    setNote('Disconnected. Your data is still on this device and in Google Drive.')
   }
 
-  // Runs a Drive action with the current token, or asks to reconnect.
-  const run = async (label: string, action: (token: Token, signal: AbortSignal) => Promise<string>) => {
-    const valid = currentToken()
-    if (!valid) {
-      setToken(null)
-      setStatus('Sign-in expired. Tap Reconnect.')
-      return
-    }
-    const controller = new AbortController()
-    running.current = controller
-    setBusy(true)
-    setStatus(`${label}…`)
-    const started = performance.now()
-    try {
-      const result = await action(valid, controller.signal)
-      setStatus(`${result} (${Math.round(performance.now() - started)} ms)`)
-    } catch (error) {
-      if (!controller.signal.aborted) setStatus(errorText(error))
-      if (!currentToken()) setToken(null)
-    } finally {
-      if (!controller.signal.aborted) setBusy(false)
-    }
+  const deleteFromDrive = () => {
+    if (!confirm("Delete Fluency's data from your Google Drive? Data on this device is kept, and this device stops syncing. Other devices will upload their copy again when they sync.")) return
+    act(() => syncEngine.deleteFromDrive(), 'Deleted from Google Drive. This device no longer syncs.')
   }
-
-  const write = () =>
-    run('Writing', async (token, signal) => {
-      const [existing] = await findFiles(token, TEST_FILE, signal)
-      const data = JSON.stringify({ writtenAt: new Date().toISOString(), environment: environment() })
-      const file = await uploadFile(token, { id: existing?.id ?? null, name: TEST_FILE, data, contentType: 'application/json' }, signal)
-      return `Wrote ${TEST_FILE} (version ${file.version}).`
-    })
-
-  const read = () =>
-    run('Reading', async (token, signal) => {
-      const [existing] = await findFiles(token, TEST_FILE, signal)
-      if (!existing) return 'No test file yet.'
-      const text = new TextDecoder().decode(await downloadFile(token, existing.id, signal))
-      return `Read version ${existing.version}: ${text.slice(0, 300)}`
-    })
-
-  const remove = () =>
-    run('Deleting', async (token, signal) => {
-      const files = await findFiles(token, TEST_FILE, signal)
-      for (const file of files) await deleteFile(token, file.id, signal)
-      return files.length ? `Deleted ${files.length} test ${files.length === 1 ? 'file' : 'files'}.` : 'No test file to delete.'
-    })
-
-  const expiresIn = token ? Math.max(0, Math.round((token.expiresAt - Date.now()) / 60_000)) : 0
 
   return (
     <section className="panel card-form">
-      <h2>Google Drive (testing)</h2>
+      <h2>Google Drive sync</h2>
       <p className="muted">
-        Checks signing in to Google and storing a small test file in Fluency's hidden folder in your Drive. Your decks
-        aren't synced yet.
+        Keep your decks, cards and progress the same on all your devices. Syncs automatically while the app is open;
+        after about an hour Google needs you to tap Sync now once to continue.
       </p>
-      <p className="muted">
-        {token ? `Connected; sign-in valid for about ${expiresIn} min.` : 'Not connected.'} Running in a {environment().split(',')[0]}.
-      </p>
+      <p role="status">{describeSync(status)}</p>
+      {google.error && <p className="feedback__error">{google.error}</p>}
       <div className="card-form__actions drive-actions">
-        {token ? (
+        {connected ? (
           <>
-            <button type="button" className="btn btn--small" disabled={busy} onClick={write}>
-              Write test file
+            <button type="button" className="btn btn--small btn--danger" disabled={busy} onClick={deleteFromDrive}>
+              Delete data from Drive
             </button>
-            <button type="button" className="btn btn--small" disabled={busy} onClick={read}>
-              Read test file
-            </button>
-            <button type="button" className="btn btn--small" disabled={busy} onClick={remove}>
-              Delete test file
-            </button>
-            <button type="button" className="btn btn--small btn--danger" disabled={busy} onClick={disconnect}>
+            <button type="button" className="btn btn--small" disabled={busy} onClick={disconnect}>
               Disconnect
+            </button>
+            <button
+              type="button"
+              className="btn btn--small btn--primary"
+              disabled={busy || !google.ready || status.state === 'syncing'}
+              onClick={() => act(() => syncEngine.syncNow())}
+            >
+              Sync now
             </button>
           </>
         ) : (
-          <>
-            <button type="button" className="btn btn--small" disabled={!loaded} onClick={() => connect('')}>
-              Reconnect
-            </button>
-            <button type="button" className="btn btn--small btn--primary" disabled={!loaded} onClick={() => connect('consent')}>
-              Connect Google Drive
-            </button>
-          </>
+          <button type="button" className="btn btn--small btn--primary" disabled={busy || !google.ready} onClick={() => act(() => syncEngine.connect())}>
+            Connect Google Drive
+          </button>
         )}
       </div>
-      {status && <p role="status">{status}</p>}
+      {note && <p className="muted">{note}</p>}
+      <p className="muted">{PRIVACY_NOTE}</p>
     </section>
+  )
+}
+
+// One line under the deck list's header while sync is on: the status, plus a button
+// when it needs a tap.
+export function SyncStatusLine() {
+  const status = useSyncExternalStore(syncEngine.subscribe, syncEngine.getStatus)
+  if (!isDriveConfigured() || status.state === 'off') return null
+  return <SyncStatusContent status={status} />
+}
+
+function SyncStatusContent({ status }: { status: SyncStatus }) {
+  const google = useGoogleAuthReady()
+  const paused = status.state === 'paused' && status.reason === 'token'
+  return (
+    <p className="sync-status muted" role="status">
+      <span>{status.state === 'error' ? `Sync error: ${status.message}` : describeSync(status).replace(' Tap Sync now to continue.', '')}</span>
+      {paused && (
+        <button type="button" className="btn btn--small" disabled={!google.ready} onClick={() => void syncEngine.syncNow()}>
+          Sync now
+        </button>
+      )}
+      {status.state === 'error' && (
+        <a className="btn btn--small" href={href.settings}>
+          Details
+        </a>
+      )}
+    </p>
   )
 }

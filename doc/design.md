@@ -7,8 +7,8 @@ spaced-repetition scheduler decides when the card returns. It targets language
 browser. Setup, commands and the file map are in [README.md](../README.md).
 
 Status: the basic loop, scheduling, storage, card editing/export, sample decks, LLM
-grading, voice and FSRS scheduling are done. Drive sync and FSRS parameter tuning
-are not. LLM grading is designed in
+grading, voice, FSRS scheduling and Google Drive sync are done; Drive sync still needs
+testing with real Google sign-in on phones. FSRS parameter tuning is not done. LLM grading is designed in
 [llm-grading.md](llm-grading.md), voice in [voice.md](voice.md), Drive sync in
 [drive-sync.md](drive-sync.md) and FSRS in [fsrs.md](fsrs.md); this document describes
 how they fit into the app.
@@ -81,7 +81,7 @@ IndexedDB database `fluency` (`src/db.ts`), schema version 1:
   Deletes are hard deletes, but each one also writes a `Deletion` record (`{ id,
   table, at }`, Dexie version 2) in the same transaction: deleting a deck records the
   deck, its cards and their reviews; deleting a card records it and its reviews; undo
-  records the review it removes. Drive sync will use them so deletes reach other
+  records the review it removes. Drive sync uses them so deletes reach other
   devices ([drive-sync.md](drive-sync.md)). They are kept forever.
 - Skips are not reviews. `getDueCards` returns up to 20 cards with `sched.due <= now`,
   soonest first; `countDueCards` backs the counts on the home screen.
@@ -101,7 +101,7 @@ back/forward work and no server configuration is needed. Navigation is plain
 
 | Route | Screen |
 |---|---|
-| `#/` | `DeckList`: decks with live due counts. Tapping a deck starts studying; Edit opens it. Create deck, export everything, open settings. Until an API key is set, a dismissible card links to settings. |
+| `#/` | `DeckList`: decks with live due counts. Tapping a deck starts studying; Edit opens it. Create deck, export everything, open settings. Until an API key is set, a dismissible card links to settings. With Drive sync on, a status line under the header. |
 | `#/study/<deckId>` | `Study`: the session. |
 | `#/edit/<deckId>` | `DeckView`: add/edit/delete cards, per-card stats (bad/fair/good counts, time until due), rename, deck languages, CSV export, delete deck. |
 | `#/settings` | `Settings`: LLM grading on/off, provider (OpenRouter or a custom OpenAI-compatible URL), model, API key, feedback language, grading rules, Test connection; voice: speech rates, a voice per language, reading the reference on reveal, hands-free options (spoken feedback, confirm grade, hide text), what this browser supports. |

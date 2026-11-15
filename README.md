@@ -1,6 +1,6 @@
 # Fluency
 
-A sentence-drill app for intermediate and advanced language learners, built as a Progressive Web App with React, TypeScript and Vite. It shows a sentence in your language, you translate it into the language you're learning, and a spaced-repetition scheduler decides when you see it again. All data stays on your device, except that with LLM grading turned on, checking an answer sends the sentence, the reference translation, your answer and the deck's languages to the LLM provider you choose. Speaking an answer uses your browser's speech recognition, which may send the audio to its provider (Google in Chrome, Apple on iOS); Fluency itself never stores or sends audio.
+A sentence-drill app for intermediate and advanced language learners, built as a Progressive Web App with React, TypeScript and Vite. It shows a sentence in your language, you translate it into the language you're learning, and a spaced-repetition scheduler decides when you see it again. All data stays on your device, except that with LLM grading turned on, checking an answer sends the sentence, the reference translation, your answer and the deck's languages to the LLM provider you choose. Speaking an answer uses your browser's speech recognition, which may send the audio to its provider (Google in Chrome, Apple on iOS); Fluency itself never stores or sends audio. With Google Drive sync turned on, your decks, cards and review history (including answers and feedback) are stored in a hidden app folder in your own Google Drive; Fluency can't see your other files, and settings and API keys are never synced.
 
 Current features: decks and cards you can create, edit and export (CSV per deck, JSON backup of everything), sample decks, a study loop with self-rating and skip, spaced-repetition scheduling, LLM grading and feedback (bring your own API key for an OpenAI-compatible provider such as OpenRouter), voice (read-aloud, speaking answers, and a hands-free mode for whole sessions), and offline use with an update prompt.
 
@@ -63,7 +63,9 @@ Google Drive sync needs an OAuth client ID (see [doc/drive-sync.md](doc/drive-sy
 | `src/grader.ts` | LLM grading prompt and response validation (`grader.test.ts`) |
 | `src/languages.ts`, `src/LanguagePicker.tsx` | Language tags and the language picker |
 | `src/DeckView.tsx`, `src/CardForm.tsx` | Deck editor: add, edit and delete cards |
-| `src/gdrive.ts`, `src/DriveSettings.tsx` | Google sign-in and Drive file access (`gdrive.test.ts`), and a temporary Settings section to test them |
+| `src/gdrive.ts` | Google sign-in and Drive file access (`gdrive.test.ts`) |
+| `src/sync.ts`, `src/driveSync.ts`, `src/changes.ts` | Drive sync engine and its triggers (`sync.test.ts`), wired to the app; local change counter |
+| `src/DriveSettings.tsx` | Settings → Google Drive sync, and the sync status line on the deck list |
 | `src/merge.ts`, `src/syncFile.ts` | Sync: merging two copies of the database (`merge.test.ts`), and the gzipped sync file with its validation (`syncFile.test.ts`) |
 | `src/storage.ts` | `localStorage` helpers for settings |
 | `src/sampleDecks.ts` | Starter decks (Spanish, Chinese, Japanese) |
