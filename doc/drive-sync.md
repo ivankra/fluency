@@ -33,7 +33,7 @@ settings, the LLM API key or anything else in `localStorage`; other storage prov
 | Deletes | A `deletions` table of tombstones `{ id, table, at }`, kept forever | Hard deletes would come back from the other device. A tombstone is ~60 bytes. |
 | Card edits vs reviews | Two timestamps on a card: `updatedAt` for its content (front, back, deck) and `sched.updatedAt` for its schedule | Editing a card on the laptop while studying it on the phone is common; with one timestamp, one of the two changes would be lost. |
 | Concurrent writers | No locking. Every sync downloads, merges and uploads; merging is idempotent, so a write lost to a race is repaired by the next sync of the device that made it | Drive v3 has no conditional (If-Match) updates. Local data is never dropped by a lost upload. |
-| Sample decks | Fixed ids for new installs; on a device's first sync, untouched sample decks are dropped if Drive already has data | Otherwise every device adds its own copy of the three sample decks. |
+| Sample decks | Fixed ids for new installs; older copies (random ids) are given the fixed ids before every merge | Otherwise every device adds its own copy of the three sample decks. |
 | Triggers | On open, a few seconds after a local change, when the app returns to the foreground, every 5 minutes while visible, and Sync now | Covers "edit here, study there" without a manual step. All cheap when nothing changed (see [Sync engine](#sync-engine)). |
 | Client ID | Build-time `VITE_GOOGLE_CLIENT_ID`; no sync UI without it | An OAuth client ID is public, not a secret. Forks and local builds without one work as today. |
 
@@ -199,13 +199,23 @@ syncs.
 ### Sample decks
 
 - `seedSampleDecks` uses fixed ids (`sample-es`, `sample-es-1`, …) from now on, so new
-  installs merge their sample decks instead of duplicating them. (Done in step 2; the
-  first-sync cleanup below belongs to the engine, step 3.)
-- Existing installs have random ids. On a device's **first** sync, if Drive already
-  has a file, local decks that are untouched samples are deleted before merging. A
-  deck counts as an untouched sample if its name and card fronts and backs match a
-  sample deck exactly and none of its cards has a review. This is done locally
-  without tombstones, so it never deletes anything on other devices.
+  installs merge their sample decks instead of duplicating them.
+- Existing installs have random ids. Before every merge, `normalizeSampleDecks`
+  (`sampleIdentity.ts`) gives them the fixed ids, on both the local data and the data
+  from Drive, so each device's copy becomes the same deck:
+  - a deck is taken for a sample deck if it has a sample deck's name and at least half
+    of its cards (and at least one) have that deck's shipped text; renamed decks and
+    decks of the user's own cards are left alone;
+  - shipped cards get their fixed ids, other cards an id derived from the old one;
+    copies with the same id are combined (newer text, newer schedule), and reviews
+    follow their cards, so both devices' history is kept;
+  - a shipped card missing from a copy was deleted there, so it is recorded as deleted
+    and removed from the other copies too; the old ids are recorded as deleted.
+- *History:* the first version of sync instead dropped only *untouched* sample decks
+  (exact cards, no reviews) on a device's first sync. Decks with a card removed or
+  any study weren't caught and showed up twice. The sync record's `sampleIds` flag
+  makes each device do one full merge after updating, which also fixes duplicates
+  that already synced.
 
 ## Sync engine
 
@@ -237,8 +247,8 @@ type SyncStatus =
    without downloading: Drive still holds what this device last synced, and local
    changes since are all newer or recorded deletions, so the local data is already the
    merged state. This keeps a sync after each review to one list and one upload.
-5. Otherwise download every copy, `merge(snapshot(), remote)` (after dropping untouched
-   sample decks on the first sync), `applyMerge` (merging again, up to 3 times, if the
+5. Otherwise download every copy, `merge(snapshot(), remote)` (both normalized with
+   `normalizeSampleDecks`; see [Sample decks](#sample-decks)), `applyMerge` (merging again, up to 3 times, if the
    database changed meanwhile), and `upload` if `remoteChanged`, if there was no file
    or if there were several.
 6. Record the file's new `version`, the change counter (read before the snapshot) and
@@ -269,8 +279,7 @@ next session sees them.
 **Settings → Google Drive sync** (only if `VITE_GOOGLE_CLIENT_ID` is set):
 
 - Not connected: a short explanation and **Connect Google Drive**. This opens
-  Google's consent popup (`prompt: 'consent'`), then runs the first sync, including
-  the sample-deck cleanup.
+  Google's consent popup (`prompt: 'consent'`), then runs the first sync.
 - Connected: "Synced 3 min ago", **Sync now**, **Disconnect**. Disconnect revokes the
   token and stops syncing. It keeps the data both locally and on Drive. A separate
   **Delete data from Drive** (with a confirmation) deletes the sync file and
@@ -337,8 +346,12 @@ JSON export (`exportAll`) adds `deletions`; older backups without it still impor
   merged by earliest `at`; ties resolved the same way on both sides; idempotence and
   symmetry over a set of random snapshots; `localChanged`/`remoteChanged` correct.
 - File validation: missing fields, wrong types, newer `format`, extra fields kept.
-- Sample-deck cleanup: untouched samples dropped on first sync only; an edited deck
-  or one with reviews kept.
+- `normalizeSampleDecks`: old copies get fixed ids with reviews moved along; two
+  devices' copies become one deck with both histories; a card removed on one device
+  is removed on the other; duplicates that already synced are combined; user-added
+  cards and edits kept; renamed decks and the user's own decks left alone; stable when
+  applied twice. Through the engine: two devices with studied copies end up identical,
+  and a device that synced duplicates before the fix repairs them on its next sync.
 - `sync.ts` with mocked Drive and database: nothing uploaded or downloaded when both
   are unchanged; an expired token pauses without a popup; a 401 mid-sync pauses; two
   remote files merged into one; a local write during a sync makes `applyMerge` abort

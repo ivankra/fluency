@@ -4,7 +4,7 @@
 import type { Snapshot } from './db'
 import { DriveError, type RemoteFile, type Token } from './gdrive'
 import { merge } from './merge'
-import { untouchedSampleDecks } from './sampleDecks'
+import { normalizeSampleDecks } from './sampleIdentity'
 import { decodeSyncFile, encodeSyncFile, SYNC_CONTENT_TYPE, SYNC_FILE_NAME, SyncFileError } from './syncFile'
 
 export type SyncStatus =
@@ -22,6 +22,9 @@ export interface SyncRecord {
   changeCount?: number // local change count at that time
   lastSyncAt?: number
   firstSyncDone?: boolean
+  // This device's data went through normalizeSampleDecks (added later). Until then, the
+  // shortcuts below that skip the merge are off, so duplicates from before get fixed.
+  sampleIds?: boolean
 }
 
 export interface SyncDeps {
@@ -209,7 +212,8 @@ export class SyncEngine {
     const record = this.record!
     const files = [...(await this.deps.findFiles(token, SYNC_FILE_NAME, signal))].sort((a, b) => (a.id < b.id ? -1 : 1))
     const [primary, ...extras] = files
-    const remoteUnchanged = !!primary && !extras.length && primary.id === record.fileId && primary.version === record.version
+    const remoteUnchanged =
+      !!primary && !extras.length && primary.id === record.fileId && primary.version === record.version && !!record.sampleIds
     const changes = this.deps.changeCount()
 
     // Nothing changed on either side since the last sync: one list request, done.
@@ -229,23 +233,20 @@ export class SyncEngine {
       }
 
       // Combine every copy in Drive (normally one; two if devices created it at once).
-      let remote: Snapshot = { decks: [], cards: [], reviews: [], deletions: [] }
-      for (const file of files) remote = merge(remote, await decodeSyncFile(await this.deps.downloadFile(token, file.id, signal))).result
+      let downloaded: Snapshot = { decks: [], cards: [], reviews: [], deletions: [] }
+      for (const file of files) downloaded = merge(downloaded, await decodeSyncFile(await this.deps.downloadFile(token, file.id, signal))).result
 
-      // First sync with data already in Drive: drop this device's untouched sample decks
-      // (and their cards), so they aren't added a second time. Locally only, no tombstones.
-      let mine = local
-      if (!record.firstSyncDone && files.length) {
-        const samples = new Set(untouchedSampleDecks(local))
-        mine = { ...local, decks: local.decks.filter((d) => !samples.has(d.id)), cards: local.cards.filter((c) => !samples.has(c.deckId)) }
-      }
+      // Sample decks from before they had fixed ids get them on both sides, so each
+      // device's copy becomes the same deck instead of a duplicate.
+      const remote = normalizeSampleDecks(downloaded)
+      const mine = normalizeSampleDecks(local)
 
       const { result, remoteChanged } = merge(mine, remote)
       if (!(await this.deps.applyMerge(local, result))) continue // changed meanwhile: merge again
       if (signal.aborted) throw signal.reason
 
       let target = primary
-      if (!primary || extras.length || remoteChanged) {
+      if (!primary || extras.length || remoteChanged || remote !== downloaded) {
         target = await this.deps.uploadFile(token, this.file(primary?.id ?? null, await encodeSyncFile(result)), signal)
       }
       for (const extra of extras) await this.deps.deleteFile(token, extra.id, signal)
@@ -259,7 +260,7 @@ export class SyncEngine {
   }
 
   private finish(update: Pick<SyncRecord, 'fileId' | 'version' | 'changeCount'>) {
-    this.saveRecord({ ...this.record!, ...update, lastSyncAt: this.deps.now(), firstSyncDone: true })
+    this.saveRecord({ ...this.record!, ...update, lastSyncAt: this.deps.now(), firstSyncDone: true, sampleIds: true })
   }
 }
 
