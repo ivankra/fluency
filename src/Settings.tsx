@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { listDecks } from './db'
 import LanguagePicker from './LanguagePicker'
+import SchedulingSettings from './SchedulingSettings'
 import { assessAnswer, DEFAULT_GRADING_RULES } from './grader'
 import {
   OPENROUTER_URL,
@@ -334,6 +335,7 @@ export default function Settings() {
           </button>
         </div>
       </form>
+      <SchedulingSettings />
       <VoiceSettings feedbackLanguage={feedbackLanguage} />
     </>
   )

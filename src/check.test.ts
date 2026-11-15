@@ -3,6 +3,8 @@ import { failCheck, invalidateCheck, resolveCheck, Session, startCheck, type Che
 import { newSched, type Card } from './db'
 import { PROMPT_VERSION, type Assessment } from './grader'
 import { LlmError } from './llm'
+import { createScheduler, sm2Scheduler, type Scheduler } from './scheduler'
+import { DEFAULT_FSRS } from './schedulerSettings'
 
 const NOW = 1_000_000_000_000
 
@@ -23,7 +25,7 @@ function deferred<T>() {
 
 // A session over the given cards with every I/O dependency mocked. Each call to
 // `assess` and `recordReview` gets its own deferred promise, kept in order.
-function setup(cards = [makeCard('a'), makeCard('b')]) {
+function setup(cards = [makeCard('a'), makeCard('b')], scheduler: Scheduler = sm2Scheduler) {
   const assessCalls: { input: unknown; signal: AbortSignal; result: ReturnType<typeof deferred<{ assessment: Assessment }>> }[] = []
   const writes: ReturnType<typeof deferred<string>>[] = []
   const grader: Grader = {
@@ -40,6 +42,7 @@ function setup(cards = [makeCard('a'), makeCard('b')]) {
     grader: () => grader,
     isOnline: () => online.value,
     now: () => NOW,
+    scheduler: () => scheduler,
     recordReview: vi.fn(() => {
       const write = deferred<string>()
       writes.push(write)
@@ -215,6 +218,17 @@ describe('Session', () => {
     await session.undo()
     await settle()
     expect(session.getState().queue).toHaveLength(1)
+  })
+
+  it('with FSRS, a new card answered Good is still learning and comes back once', async () => {
+    const fsrs = await createScheduler({ algorithm: 'fsrs', fsrs: DEFAULT_FSRS })
+    const { session, deps, writes, answer } = setup([makeCard('a')], fsrs)
+    answer()
+    const grading = session.grade(3)
+    writes[0].resolve('review-1')
+    await grading
+    expect((deps.recordReview.mock.calls[0] as unknown[])[2]).toMatchObject({ algo: 'fsrs', state: 1 })
+    expect(session.getState().queue).toHaveLength(2)
   })
 
   it('reports whether an edit was saved: not while another write runs, nor when it fails', async () => {

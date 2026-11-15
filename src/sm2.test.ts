@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { newSched } from './db'
-import { schedule, skip } from './scheduler'
+import { rebuild, schedule } from './sm2'
+import { skip } from './scheduler'
 import { DAY } from './time'
 
 const NOW = 1_000_000_000_000
@@ -51,6 +52,17 @@ describe('schedule', () => {
   it('skip only moves the due date', () => {
     const s = review(10)
     expect(skip(s, NOW)).toEqual({ ...s, due: NOW + 3 * DAY })
+  })
+
+  it('rebuild replays reviews in order, and keeps the due date of a card without any', () => {
+    const reviews = [
+      { at: NOW + 2 * DAY, grade: 3 as const },
+      { at: NOW, grade: 3 as const },
+      { at: NOW + DAY, grade: 2 as const },
+    ]
+    const stepwise = schedule(schedule(schedule(newSched(NOW), 3, NOW), 2, NOW + DAY), 3, NOW + 2 * DAY)
+    expect(rebuild(reviews, 0)).toEqual(stepwise)
+    expect(rebuild([], NOW + 5)).toEqual(newSched(NOW + 5))
   })
 
   it('does not mutate its input', () => {

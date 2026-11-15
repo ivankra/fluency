@@ -400,6 +400,12 @@ a.btn {
   flex: 1;
 }
 
+/* When the card comes back after this grade, e.g. "Good · 4d". */
+.study__interval {
+  font-size: 13px;
+  opacity: 0.75;
+}
+
 /* Keyboard shortcut hints; useless on touch screens. */
 .btn kbd {
   font: inherit;
@@ -550,4 +556,33 @@ select {
 
 .diff--removed + .diff--added {
   margin-left: 2px;
+}
+
+.choice {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.choice legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+/* Radios with a sentence of explanation: keep the button on the first line. */
+.card-form .choice .checkbox {
+  align-items: flex-start;
+}
+
+.choice .checkbox input {
+  margin-top: 4px;
+}
+
+.dev-tools {
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
 }

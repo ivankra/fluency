@@ -7,7 +7,8 @@ spaced-repetition scheduler decides when the card returns. It targets language
 browser. Setup, commands and the file map are in [README.md](../README.md).
 
 Status: the basic loop, scheduling, storage, card editing/export, sample decks, LLM
-grading and voice are done. Drive sync and FSRS are not. LLM grading is designed in
+grading, voice and FSRS scheduling are done. Drive sync and FSRS parameter tuning
+are not. LLM grading is designed in
 [llm-grading.md](llm-grading.md), voice in [voice.md](voice.md), Drive sync in
 [drive-sync.md](drive-sync.md) and FSRS in [fsrs.md](fsrs.md); this document describes
 how they fit into the app.
@@ -23,7 +24,7 @@ components (DeckList, DeckView, Settings)       Study
    │  writes: await db function                   │  calls its actions
    │                                              ▼
    │                                   src/check.ts  Session: queue, LLM checks, writes
-   │                                     ├──▶ src/scheduler.ts  pure: (Sched, Grade, now) → Sched
+   │                                     ├──▶ src/scheduler.ts  pure: SM-2 (sm2.ts) or FSRS (fsrs.ts)
    │                                     ├──▶ src/grader.ts ──▶ src/llm.ts ──▶ provider
    ▼                                     ▼
 src/db.ts  ── the only module that touches Dexie ──▶ IndexedDB
@@ -38,8 +39,8 @@ src/db.ts  ── the only module that touches Dexie ──▶ IndexedDB
   that can find nothing returns `null` to tell the two apart (see `getDeck`).
 - **The scheduler never touches storage.** It maps a schedule to a new schedule.
   `db.ts` functions like `recordReview(card, grade, sched)` just persist what the caller
-  computed, which keeps the algorithm testable. It isn't fully swappable by replacing
-  `scheduler.ts` alone, though; see the coupling notes under Data.
+  computed, which keeps the algorithm testable. The session gets the active algorithm
+  as a `Scheduler` object; see [Scheduling](#scheduling).
 - **Tests** (`make test`, vitest) cover the scheduler, the grader's prompt and
   validation, the API key handling in `llm.ts`, the study `Session` and the hands-free
   loop with their I/O mocked, and the speech wrapper against fake browser APIs. The db layer and components are untested; `make eval` (paid, manual) checks
@@ -60,13 +61,13 @@ IndexedDB database `fluency` (`src/db.ts`), schema version 1:
 - Ids are UUIDs. Cards and decks carry `updatedAt`, set by every write, for the planned
   Drive sync. Reviews are immutable once written and have no `updatedAt`, but they can
   be deleted: by undo, by the cascade when a card or deck is deleted, or by `importAll`.
-- `sched` is a nested object owned by the scheduler (`due`, `interval`, `ease`, `reps`,
-  `lapses`), which keeps scheduler fields out of `Card`. Dexie indexes the nested path
+- `sched` is a nested object owned by the scheduler, which keeps scheduler fields out of
+  `Card`. Its shape depends on the algorithm (`Sm2Sched` without `algo`, or `FsrsSched`
+  with `algo: 'fsrs'`); `due` is common to both. Dexie indexes the nested `sched.due`
   directly; this is what makes "due cards in a deck" a single range query.
-- Replacing the algorithm (e.g. FSRS) touches more than `scheduler.ts`: `newSched()` in
-  `db.ts` builds the SM-2 defaults for new cards, queries and the UI depend on
-  `sched.due`, and `check.ts` reads `interval === 0` to decide whether a failed card is
-  requeued. Existing stored `sched` objects also need converting.
+- New cards get an SM-2 schedule (`newSched()`); under FSRS, `Study` rebuilds them (and
+  any card whose schedule belongs to the other algorithm) from their review history
+  before the session starts.
 - Schema changes need a new `db.version(n)` block listing only the indexed fields.
   Adding or changing non-indexed fields needs no version bump, but existing records keep
   their old shape, so such changes need backward-compatible reads or an `.upgrade()`
@@ -131,7 +132,8 @@ automatically except the submit.
 **Skip** hides the card for 3 days (`skip()` in the scheduler) without a review, and
 leaves ease, interval and counters alone. Available before and after the reveal.
 
-**Retry.** A grade that leaves `interval === 0` (the card failed) appends a copy to the
+**Retry.** A grade that leaves the card in (re)learning (`isLearning`: SM-2
+`interval === 0`, a failed card; FSRS learning or relearning) appends a copy to the
 end of the queue, at most twice per card per session. The 10-minute delay is stored in
 `due` for future sessions; within a session the copy appears as soon as the user
 reaches it.
@@ -158,8 +160,15 @@ their checks are reset (checking again is explicit).
 
 ## Scheduling
 
-`src/scheduler.ts`: `schedule(sched, grade, now) → Sched`, a pure function with table
-tests. FSRS as an alternative is designed in [fsrs.md](fsrs.md). A simplified SM-2: whole-day intervals, no learning-step ladder, three grades.
+Two algorithms, chosen in Settings → Scheduling: the simplified SM-2 below (the
+default) and FSRS, designed in [fsrs.md](fsrs.md). `src/scheduler.ts` wraps the active
+one in a `Scheduler` (`schedule`, `rebuild` from history, `matches`), which `Study`
+creates and passes to the session; `skip` and `isLearning` work for both. Switching
+algorithm rebuilds every card's schedule from its reviews, so it is lossless. The grade
+buttons show when the card would come back after each grade ("Good · 4d").
+
+`src/sm2.ts`: `schedule(sched, grade, now) → Sched`, a pure function with table
+tests. A simplified SM-2: whole-day intervals, no learning-step ladder, three grades.
 For sentence production, where the user has just written the whole sentence, a short
 retry after a failure (at most two per session, so up to three graded attempts) was
 judged enough. Tunable constants are at the top of the file.

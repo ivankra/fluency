@@ -13,15 +13,31 @@ export interface Deck {
   updatedAt: number
 }
 
-// Scheduling state, owned by the scheduler. Kept as a nested object so another
-// algorithm (e.g. FSRS) can swap in its own fields without touching Card.
-export interface Sched {
+// Scheduling state, owned by the scheduler (see scheduler.ts). Each algorithm has its
+// own shape; `due` is shared and indexed. Records without `algo` are SM-2.
+export interface Sm2Sched {
+  algo?: 'sm2'
   due: number // ms timestamp; the card is up for review once now >= due
   interval: number // days
   ease: number // SM-2 ease factor
   reps: number
   lapses: number
 }
+
+export interface FsrsSched {
+  algo: 'fsrs'
+  due: number
+  stability: number
+  difficulty: number
+  state: 0 | 1 | 2 | 3 // new, learning, review, relearning (ts-fsrs State)
+  learningStep: number
+  scheduledDays: number
+  lastReview: number | null // ms
+  reps: number
+  lapses: number
+}
+
+export type Sched = Sm2Sched | FsrsSched
 
 export interface Card {
   id: string
@@ -71,7 +87,8 @@ db.version(1).stores({
 
 const newId = () => crypto.randomUUID()
 
-export const newSched = (now = Date.now()): Sched => ({
+// New cards start with an SM-2 schedule; under FSRS, Study converts them before use.
+export const newSched = (now = Date.now()): Sm2Sched => ({
   due: now,
   interval: 0,
   ease: 2.5,
@@ -166,6 +183,26 @@ export const undoAttempt = (cardId: string, sched: Sched, reviewId?: string) =>
 // Skip: not a review, so no history entry. The caller (scheduler) computes `sched`.
 export const skipCard = (card: Card, sched: Sched) =>
   db.cards.update(card.id, { sched, updatedAt: Date.now() })
+
+// Recompute schedules from review history, e.g. after switching algorithm. `cardIds`
+// limits it to those cards; returns how many cards were updated.
+export const rebuildSchedules = (rebuild: (card: Card, reviews: Review[]) => Sched, cardIds?: string[]) =>
+  db.transaction('rw', db.cards, db.reviews, async () => {
+    const cards = cardIds ? (await db.cards.bulkGet(cardIds)).filter((card) => card !== undefined) : await db.cards.toArray()
+    const reviews = cardIds ? await db.reviews.where('cardId').anyOf(cardIds).toArray() : await db.reviews.toArray()
+    const byCard = new Map<string, Review[]>()
+    for (const review of reviews) {
+      const list = byCard.get(review.cardId)
+      if (list) list.push(review)
+      else byCard.set(review.cardId, [review])
+    }
+    const now = Date.now()
+    await db.cards.bulkPut(cards.map((card) => ({ ...card, sched: rebuild(card, byCard.get(card.id) ?? []), updatedAt: now })))
+    return cards.length
+  })
+
+// Development only (demo history): add past reviews in bulk.
+export const addReviews = (reviews: Review[]) => db.reviews.bulkAdd(reviews)
 
 // Per-card attempt counts as [bad, fair, good], for cards in a deck.
 export async function gradeCounts(deckId: string) {

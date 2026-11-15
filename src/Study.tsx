@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import CardForm from './CardForm'
 import Feedback from './Feedback'
 import { Session, type Grader } from './check'
-import { GRADES, editCard, getDeck, getDueCards, recordReview, skipCard, undoAttempt, type Deck, type Grade } from './db'
+import { GRADES, editCard, getDeck, getDueCards, rebuildSchedules, recordReview, skipCard, undoAttempt, type Card, type Deck, type Grade } from './db'
 import { assessAnswer } from './grader'
 import { HandsFree, keepScreenAwake, type HandsFreePhase } from './handsFree'
 import { getLlmApiKey, loadLlmSettings, type LlmSettings } from './llm'
@@ -23,6 +23,9 @@ import {
   speak,
   voicesReady,
 } from './speech'
+import { createScheduler, preview, type Scheduler } from './scheduler'
+import { loadSchedulerSettings } from './schedulerSettings'
+import { formatInterval } from './time'
 import { useDictation } from './useDictation'
 
 const GRADE_CLASS: Record<Grade, string> = { 1: 'btn btn--danger', 2: 'btn', 3: 'btn btn--primary' }
@@ -61,9 +64,13 @@ export default function Study({ deckId }: { deckId: string }) {
   // Settings only change on the settings screen, so reading them once is enough.
   const [settings] = useState(loadLlmSettings)
   const [voiceSettings, setVoiceSettings] = useState(loadVoiceSettings)
+  // Set before the session loads its cards, so it is there for every grade.
+  const schedulerRef = useRef<Scheduler | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [session] = useState(
     () =>
       new Session({
+        scheduler: () => schedulerRef.current!,
         grader: () => makeGrader(settings, deckRef.current),
         isOnline: () => navigator.onLine,
         now: Date.now,
@@ -100,7 +107,14 @@ export default function Study({ deckId }: { deckId: string }) {
   // The queue is a snapshot taken on entry, so cards don't shuffle while we work.
   useEffect(() => {
     let stale = false
-    getDueCards(deckId).then((cards) => !stale && session.load(cards))
+    loadDueCards(deckId).then(
+      ({ scheduler, cards }) => {
+        if (stale) return
+        schedulerRef.current = scheduler
+        session.load(cards)
+      },
+      (error) => !stale && setLoadError(`Couldn't start the session: ${error instanceof Error ? error.message : error}`),
+    )
     return () => {
       stale = true
       session.dispose()
@@ -243,8 +257,11 @@ export default function Study({ deckId }: { deckId: string }) {
     return () => window.removeEventListener('keydown', onKey)
   })
 
+  if (loadError) return <p className="feedback__error">{loadError}</p>
   if (!queue) return null
   const card = slot?.card
+  const scheduler = schedulerRef.current
+  const dueAfter = slot?.revealed && scheduler ? preview(scheduler, slot.card, Date.now()) : null
   const showVoiceError = (message: string) => setVoiceError(message)
 
   return (
@@ -346,7 +363,9 @@ export default function Study({ deckId }: { deckId: string }) {
                     disabled={writing}
                     onClick={() => session.grade(grade)}
                   >
-                    {label} <kbd>{grade}</kbd>
+                    {label}
+                    {dueAfter && <span className="study__interval"> · {formatInterval(dueAfter[grade] - Date.now())}</span>}{' '}
+                    <kbd>{grade}</kbd>
                   </button>
                 ))}
                 <button className="btn" disabled={writing} onClick={() => session.skip()}>
@@ -391,4 +410,16 @@ export default function Study({ deckId }: { deckId: string }) {
       {voiceError && <p className="feedback__error">{voiceError}</p>}
     </>
   )
+}
+
+// Due cards with schedules for the active algorithm. Cards still on the other one (new
+// cards, or after switching or syncing) are rebuilt from their history first.
+async function loadDueCards(deckId: string): Promise<{ scheduler: Scheduler; cards: Card[] }> {
+  const scheduler = await createScheduler(loadSchedulerSettings())
+  const cards = await getDueCards(deckId)
+  const stale = cards.filter((card) => !scheduler.matches(card.sched)).map((card) => card.id)
+  if (!stale.length) return { scheduler, cards }
+  await rebuildSchedules((card, reviews) => scheduler.rebuild(card, reviews), stale)
+  // Rebuilding can move a card's due date, so read the due cards again.
+  return { scheduler, cards: await getDueCards(deckId) }
 }

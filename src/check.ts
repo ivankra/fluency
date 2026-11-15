@@ -4,9 +4,10 @@
 import type { Card, Grade, Sched } from './db'
 import { PROMPT_VERSION, type AnswerMode, type Assessment, type GradingInput, type ReviewAssessment } from './grader'
 import { LlmError } from './llm'
-import { schedule, skip } from './scheduler'
+import { isLearning, skip, type Scheduler } from './scheduler'
 
-// A failed card is requeued this many times at most per session, so it can't loop forever.
+// A card still in (re)learning is requeued this many times at most per session, so it
+// can't loop forever.
 export const MAX_RETRIES = 2
 
 // Snapshot taken when a check starts; review metadata comes from here.
@@ -66,6 +67,7 @@ export interface Grader {
 }
 
 export interface SessionDeps {
+  scheduler(): Scheduler
   grader(): Grader | null
   isOnline(): boolean
   now(): number
@@ -209,7 +211,7 @@ export class Session {
         : undefined
     this.updateSlot(slot.key, this.cancel)
     const card = slot.card
-    const sched = schedule(card.sched, grade, this.deps.now())
+    const sched = this.deps.scheduler().schedule(card, grade, this.deps.now())
 
     const answer = slot.answer.trim() || undefined
     return this.write(async () => {
@@ -218,11 +220,11 @@ export class Session {
         ...(answer && slot.answerMode === 'spoken' && { answerMode: 'spoken' as const }),
         assessment,
       })
-      // interval 0 means the card is back to (re)learning: show it again this session.
+      // Still (re)learning, e.g. failed: show it again this session.
       let queue = this.state.queue!
       let requeuedKey: number | undefined
       const tries = this.retries.get(card.id) ?? 0
-      if (sched.interval === 0 && tries < MAX_RETRIES) {
+      if (isLearning(sched) && tries < MAX_RETRIES) {
         this.retries.set(card.id, tries + 1)
         const kept = this.parked?.card.id === card.id ? this.parked : this.newSlot(card)
         this.parked = null
