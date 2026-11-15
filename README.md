@@ -60,6 +60,7 @@ The service worker is off under `make dev`. To test installing the app or using 
 | `src/grader.ts` | LLM grading prompt and response validation (`grader.test.ts`) |
 | `src/languages.ts`, `src/LanguagePicker.tsx` | Language tags and the language picker |
 | `src/DeckView.tsx`, `src/CardForm.tsx` | Deck editor: add, edit and delete cards |
+| `src/merge.ts`, `src/syncFile.ts` | Sync: merging two copies of the database (`merge.test.ts`), and the gzipped sync file with its validation (`syncFile.test.ts`) |
 | `src/storage.ts` | `localStorage` helpers for settings |
 | `src/sampleDecks.ts` | Starter decks (Spanish, Chinese, Japanese) |
 | `src/exportFile.ts` | CSV and JSON export |

@@ -2,8 +2,9 @@
 //
 // Every entity has a unique `id` and an `updatedAt` timestamp (ms), so Google Drive
 // sync can detect conflicts now and merge per-entity later.
-import Dexie, { type EntityTable } from 'dexie'
+import Dexie, { type EntityTable, type IDType } from 'dexie'
 import type { AnswerMode, ReviewAssessment } from './grader'
+import { canonical, sortSnapshot } from './merge'
 
 export interface Deck {
   id: string
@@ -17,6 +18,7 @@ export interface Deck {
 // own shape; `due` is shared and indexed. Records without `algo` are SM-2.
 export interface Sm2Sched {
   algo?: 'sm2'
+  updatedAt?: number // when the schedule last changed (ms); missing means the card's updatedAt
   due: number // ms timestamp; the card is up for review once now >= due
   interval: number // days
   ease: number // SM-2 ease factor
@@ -26,6 +28,7 @@ export interface Sm2Sched {
 
 export interface FsrsSched {
   algo: 'fsrs'
+  updatedAt?: number // as in Sm2Sched
   due: number
   stability: number
   difficulty: number
@@ -45,6 +48,8 @@ export interface Card {
   front: string // sentence in the user's native language (prompt)
   back: string // expected sentence in the target language
   sched: Sched
+  // When front, back or deck last changed. Schedule changes set sched.updatedAt instead,
+  // so sync can merge an edit on one device with a review on another.
   updatedAt: number
 }
 
@@ -72,6 +77,14 @@ export interface Deletion {
   id: string // the deleted deck, card or review
   table: 'decks' | 'cards' | 'reviews'
   at: number // ms
+}
+
+// Everything sync merges: the whole database, deletion records included.
+export interface Snapshot {
+  decks: Deck[]
+  cards: Card[]
+  reviews: Review[]
+  deletions: Deletion[]
 }
 
 export interface Backup {
@@ -104,6 +117,10 @@ const recordDeletions = (table: Deletion['table'], ids: string[]) => {
 
 const newId = () => crypto.randomUUID()
 
+// Marks a schedule as changed now. The scheduler copies the old schedule into the new
+// one, so every write of a schedule goes through this.
+const stamp = <S extends Sched>(sched: S, at = Date.now()): S => ({ ...sched, updatedAt: at })
+
 // New cards start with an SM-2 schedule; under FSRS, Study converts them before use.
 export const newSched = (now = Date.now()): Sm2Sched => ({
   due: now,
@@ -123,8 +140,9 @@ export const getDeck = async (id: string) => (await db.decks.get(id)) ?? null
 export async function addDeck(
   name: string,
   languages?: Pick<Deck, 'sourceLanguage' | 'targetLanguage'>,
+  id: string = newId(), // fixed for sample decks, so devices that sync share them
 ): Promise<Deck> {
-  const deck = { id: newId(), name, ...languages, updatedAt: Date.now() }
+  const deck = { id, name, ...languages, updatedAt: Date.now() }
   await db.decks.add(deck)
   return deck
 }
@@ -151,9 +169,9 @@ export const deleteDeck = (id: string) =>
 
 export const listCards = (deckId: string) => db.cards.where('deckId').equals(deckId).toArray()
 
-export async function addCard(deckId: string, front: string, back: string): Promise<Card> {
+export async function addCard(deckId: string, front: string, back: string, id: string = newId()): Promise<Card> {
   const now = Date.now()
-  const card = { id: newId(), deckId, front, back, sched: newSched(now), updatedAt: now }
+  const card = { id, deckId, front, back, sched: stamp(newSched(now), now), updatedAt: now }
   await db.cards.add(card)
   return card
 }
@@ -193,7 +211,7 @@ export const recordReview = (
     const now = Date.now()
     const id = newId()
     await db.reviews.add({ id, cardId: card.id, at: now, grade, ...extra })
-    await db.cards.update(card.id, { sched, updatedAt: now })
+    await db.cards.update(card.id, { sched: stamp(sched, now) })
     return id
   })
 
@@ -205,12 +223,12 @@ export const undoAttempt = (cardId: string, sched: Sched, reviewId?: string) =>
       // It may already have been synced to another device.
       await recordDeletions('reviews', [reviewId])
     }
-    await db.cards.update(cardId, { sched, updatedAt: Date.now() })
+    await db.cards.update(cardId, { sched: stamp(sched) })
   })
 
 // Skip: not a review, so no history entry. The caller (scheduler) computes `sched`.
 export const skipCard = (card: Card, sched: Sched) =>
-  db.cards.update(card.id, { sched, updatedAt: Date.now() })
+  db.cards.update(card.id, { sched: stamp(sched) })
 
 // Recompute schedules from review history, e.g. after switching algorithm. `cardIds`
 // limits it to those cards; returns how many cards were updated.
@@ -225,7 +243,7 @@ export const rebuildSchedules = (rebuild: (card: Card, reviews: Review[]) => Sch
       else byCard.set(review.cardId, [review])
     }
     const now = Date.now()
-    await db.cards.bulkPut(cards.map((card) => ({ ...card, sched: rebuild(card, byCard.get(card.id) ?? []), updatedAt: now })))
+    await db.cards.bulkPut(cards.map((card) => ({ ...card, sched: stamp(rebuild(card, byCard.get(card.id) ?? []), now) })))
     return cards.length
   })
 
@@ -258,6 +276,38 @@ export const exportAll = (): Promise<Backup> =>
   }))
 
 export const listDeletions = () => db.deletions.toArray()
+
+// --- Sync ---
+
+const readSnapshot = async (): Promise<Snapshot> => ({
+  decks: await db.decks.toArray(),
+  cards: await db.cards.toArray(),
+  reviews: await db.reviews.toArray(),
+  deletions: await db.deletions.toArray(),
+})
+
+// The whole database at one moment.
+export const snapshot = () => db.transaction('r', [db.decks, db.cards, db.reviews, db.deletions], readSnapshot)
+
+// Writes a merge result over `before` (a snapshot read earlier), changing only what
+// differs, in one transaction. If anything changed since `before` was read (say, a
+// review recorded during the sync), it writes nothing and returns false, and the caller
+// merges again; otherwise the newer change would be overwritten.
+export const applyMerge = (before: Snapshot, result: Snapshot) =>
+  db.transaction('rw', [db.decks, db.cards, db.reviews, db.deletions], async () => {
+    if (canonical(sortSnapshot(await readSnapshot())) !== canonical(sortSnapshot(before))) return false
+    const write = async <T extends { id: string }>(table: EntityTable<T, 'id'>, old: T[], next: T[]) => {
+      const previous = new Map(old.map((item) => [item.id, canonical(item)]))
+      const keep = new Set(next.map((item) => item.id))
+      await table.bulkPut(next.filter((item) => previous.get(item.id) !== canonical(item)))
+      await table.bulkDelete(old.filter((item) => !keep.has(item.id)).map((item) => item.id as IDType<T, 'id'>))
+    }
+    await write(db.decks, before.decks, result.decks)
+    await write(db.cards, before.cards, result.cards)
+    await write(db.reviews, before.reviews, result.reviews)
+    await write(db.deletions, before.deletions, result.deletions)
+    return true
+  })
 
 // Replaces the entire local database, deletion records included.
 export const importAll = (data: Backup) =>

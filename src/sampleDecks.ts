@@ -55,6 +55,8 @@ const SAMPLE_DECKS: { name: string; targetLanguage: string; cards: [string, stri
 
 const SEEDED_KEY = 'fluency:sample-decks-seeded'
 
+export const sampleDeckId = (targetLanguage: string) => `sample-${targetLanguage}`
+
 // Add the sample decks once, on a fresh install. Never re-adds them after the
 // user deletes them, and never touches a database that already has decks.
 export async function seedSampleDecks() {
@@ -66,8 +68,10 @@ export async function seedSampleDecks() {
 
   if ((await listDecks()).length === 0) {
     for (const { name, targetLanguage, cards } of SAMPLE_DECKS) {
-      const deck = await addDeck(name, { sourceLanguage: 'en', targetLanguage })
-      for (const [front, back] of cards) await addCard(deck.id, front, back)
+      // Fixed ids (sample-es, sample-es-1, …), so two devices that sync end up with one
+      // copy of each sample deck rather than two.
+      const deck = await addDeck(name, { sourceLanguage: 'en', targetLanguage }, sampleDeckId(targetLanguage))
+      for (const [index, [front, back]] of cards.entries()) await addCard(deck.id, front, back, `${deck.id}-${index + 1}`)
     }
   }
 

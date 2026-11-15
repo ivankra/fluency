@@ -60,8 +60,11 @@ IndexedDB database `fluency` (`src/db.ts`), schema version 1:
 | `cards` | `id`, `deckId`, `[deckId+sched.due]` | `front` (native, the prompt), `back` (target, the expected answer), `sched`, `updatedAt` |
 | `reviews` | `id`, `cardId`, `at` | one graded attempt: `grade` (1 bad, 2 fair, 3 good, the user's final say), optional typed or spoken `answer` (`answerMode: 'spoken'` when dictated), optional `assessment` (the LLM's grade and feedback, with the model, prompt version and graded input) |
 
-- Ids are UUIDs. Cards and decks carry `updatedAt`, set by every write, for the planned
-  Drive sync. Reviews are immutable once written and have no `updatedAt`, but they can
+- Ids are UUIDs, except the sample decks' fixed ids (`sample-es`, `sample-es-1`, …),
+  so devices that sync share them. Decks carry `updatedAt`, set by every write, for
+  the planned Drive sync. A card's `updatedAt` covers its text and deck;
+  schedule changes (review, skip, undo, rebuild) set `sched.updatedAt` instead, so
+  sync can merge an edit on one device with a review on another. Reviews are immutable once written and have no `updatedAt`, but they can
   be deleted: by undo, by the cascade when a card or deck is deleted, or by `importAll`.
 - `sched` is a nested object owned by the scheduler, which keeps scheduler fields out of
   `Card`. Its shape depends on the algorithm (`Sm2Sched` without `algo`, or `FsrsSched`
