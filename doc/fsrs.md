@@ -85,33 +85,44 @@ Settings ──▶ schedulerSettings.ts  load/save, validation, defaults
 ### `src/scheduler.ts`
 
 ```ts
-export type Algorithm = 'sm2' | 'fsrs'
-
-export function schedule(sched: Sched, grade: Grade, now: number): Sched
-export function skip(sched: Sched, now: number): Sched
-// Whether the card should come back in this session (replaces `interval === 0` in check.ts).
-export function isLearning(sched: Sched, now: number): boolean
-// Rebuilds a card's schedule from its reviews, oldest first; a card with no reviews gets
-// a new schedule that keeps its current `due`.
-export function rebuild(reviews: { at: number; grade: Grade }[], current: Sched): Sched
+export interface Scheduler {
+  readonly algorithm: 'sm2' | 'fsrs'
+  matches(sched: Sched): boolean            // the schedule belongs to this algorithm
+  schedule(card: Card, grade: Grade, now: number): Sched
+  rebuild(card: Card, reviews: { at: number; grade: Grade }[]): Sched
+}
+export const sm2Scheduler: Scheduler
+export function createScheduler(settings: SchedulerSettings): Promise<Scheduler>  // FSRS is async
+export function skip(sched: Sched, now: number): Sched      // moves `due` only, both shapes
+export function isLearning(sched: Sched): boolean           // replaces `interval === 0` in check.ts
+export function preview(scheduler: Scheduler, card: Card, now: number): Record<Grade, number>
 ```
 
-`schedule` and `rebuild` use the algorithm and options from `schedulerSettings.ts`. If a
-card's `sched` belongs to the other algorithm (a card that hasn't been rebuilt yet, or
-one synced from a device using the other algorithm), `schedule` rebuilds it from history
-first. That needs the card's reviews, so `check.ts` passes them in (they are already read
-for the stats) or `schedule` takes a `history` argument; this is settled in the
-implementation.
+`Study` creates the scheduler from the settings and passes it to the `Session` as a
+dependency, so `check.ts` never reads settings. Before the session starts, `Study` finds
+due cards whose `sched` belongs to the other algorithm (new cards, which always start
+with SM-2's `newSched()`, cards not yet rebuilt, or later ones synced from a device
+using the other algorithm) and rebuilds them from their reviews with
+`rebuildSchedules`, then reads the due cards again. Grading stays synchronous and
+pure. If a mismatched schedule reaches `schedule` anyway, the card starts over as new
+rather than failing.
 
-`isLearning` is true for SM-2 when `interval === 0` and for FSRS when the card is in the
-learning or relearning state. The retry rule in the session (at most two per card) is
-unchanged.
+`rebuild` replays the reviews, oldest first; a card without reviews gets a new
+schedule that keeps its current `due`. `isLearning` is true for SM-2 when
+`interval === 0` and for FSRS in the learning or relearning state. The retry rule in
+the session (at most two per card) is unchanged; under FSRS it also brings back a new
+card answered Good, which is in its 10-minute learning step.
+
+`preview` gives the due date after each grade, for the labels on the grade buttons
+("Good · 4d"). With fuzz on, ts-fsrs seeds its randomness from the card, so the
+labels match what grading does.
 
 ### `src/fsrs.ts`
 
 - Creates the ts-fsrs scheduler with `version: 'FSRS-6'`, the user's weights (or the
   FSRS-6 defaults) and options. `DefaultScheduler` is async, so it is created once when
-  the session starts and again when settings change; `schedule` stays synchronous.
+  the session starts; `schedule` stays synchronous. ts-fsrs validates the options, which
+  the settings screen uses to check input before saving.
 - Converts between our `Sched` (timestamps in ms, stored in IndexedDB) and ts-fsrs'
   `Card` (`Date` objects), and maps grades to ratings.
 - `rebuild` uses `Reschedule.reschedule({ history })`.
@@ -166,7 +177,7 @@ No Dexie version bump: `sched` isn't indexed beyond `due`. Older records read as
 The JSON backup carries whatever shape a card has. `DeckView`'s "due in" text only uses
 `due`, so it works for both.
 
-**Rebuilding** (`db.rescheduleAll`) reads all cards and reviews, computes each card's new
+**Rebuilding** (`db.rebuildSchedules(rebuild, cardIds?)`) reads the cards and their reviews, computes each card's new
 `sched` with `rebuild`, and writes them in one transaction. It also sets `updatedAt` (and
 `sched.updatedAt` once Drive sync lands). It runs on switching algorithm and on applying
 retuned parameters. For a few thousand cards this is well under a second; it shows a
@@ -192,12 +203,15 @@ A **Scheduling** section in Settings:
   Apply and reschedule?" **Reset to defaults** asks to confirm and reschedules. An
   **Advanced** disclosure shows the 21 numbers in a text field for pasting parameters
   from Anki (FSRS-6), validated before saving, then applied like Optimize.
-- Changes to options save immediately, like the other settings; nothing else
-  reschedules.
+- Changes to options save immediately once valid, like the other settings; nothing
+  else reschedules. **Reset options** restores the defaults and keeps the parameters.
+- Development builds only: **Developer: demo history** adds 60 days of made-up reviews
+  (simulated SM-2 study with a forgetting curve, `demoHistory.ts`) to a deck's cards and
+  rebuilds them, so switching algorithms and, later, Optimize have data to show.
 
 `schedulerSettings.ts` stores `{ algorithm, fsrs: { desiredRetention, maximumInterval,
-learningSteps, relearningSteps, enableFuzz, weights: number[] | null, tunedAt?,
-tunedReviews? } }`. Invalid or missing values fall back to defaults field by field,
+learningSteps, relearningSteps, enableFuzz, weights: number[] | null } }`; the
+optimizer PR adds when and on how many reviews the parameters were tuned. Invalid or missing values fall back to defaults field by field,
 like `loadLlmSettings`.
 
 ## Drive sync
@@ -242,10 +256,11 @@ home-screen app; a study session under FSRS (learning steps requeue, undo, skip)
 
 Two PRs, each ending with `make test` passing.
 
-1. **FSRS scheduling.** `ts-fsrs`, the `Sched` union, `fsrs.ts`, `scheduler.ts`
-   dispatch and `rebuild`, `isLearning` in `check.ts`, `rescheduleAll`, the Settings
-   section with algorithm and options (no optimizer yet), docs (design.md's
-   Scheduling section).
+1. **FSRS scheduling** (done). `ts-fsrs`, the `Sched` union, `fsrs.ts`, `scheduler.ts`
+   and `rebuild`, `isLearning` in `check.ts`, `rebuildSchedules`, the Settings section
+   with algorithm and options (no optimizer yet), interval labels on the grade
+   buttons, and a development-only "demo history" generator in Settings for trying the
+   schedulers without weeks of study.
 2. **Optimizer.** The binding, Vite worker config, npm `overrides`,
    `optimizer.ts`/worker, the minimum-reviews threshold, Optimize/Apply/Reset/paste in
    Settings, the Node test. Done when retuning works on the four platforms above.

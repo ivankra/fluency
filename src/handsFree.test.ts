@@ -4,6 +4,7 @@ import { newSched, type Card } from './db'
 import type { Assessment } from './grader'
 import { HandsFree, parseCommand } from './handsFree'
 import { abortError, SpeechError, type Heard, type VoiceSettings } from './speech'
+import { sm2Scheduler } from './scheduler'
 
 const NOW = 1_000_000_000_000
 const HINT = 'Say good, fair or bad.'
@@ -51,6 +52,7 @@ function setup({ cards = [makeCard('a'), makeCard('b')], grading = true, voice =
     grader: () => (grading ? grader : null),
     isOnline: () => online.value,
     now: () => NOW,
+    scheduler: () => sm2Scheduler,
     recordReview: vi.fn(async () => 'review'),
     skipCard: vi.fn(async () => {}),
     undoAttempt: vi.fn(async () => {}),

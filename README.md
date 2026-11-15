@@ -40,12 +40,16 @@ The service worker is off under `make dev`. To test installing the app or using 
 | `doc/design.md` | Data model, screens, study loop and scheduling |
 | `doc/llm-grading.md` | Design for LLM grading and feedback |
 | `doc/voice.md` | Design for read-aloud, speech recognition and hands-free mode |
+| `doc/fsrs.md` | Design for FSRS scheduling and parameter tuning |
 | `index.html` | HTML entry point: meta tags, icons, root element |
 | `src/main.tsx` | Mounts React and seeds the sample decks on first run |
 | `src/App.tsx` | Root component: picks the screen from the URL |
 | `src/route.ts` | Hash router |
 | `src/db.ts` | On-device storage (IndexedDB via Dexie): decks, cards, reviews, backup |
-| `src/scheduler.ts` | Spaced-repetition scheduler (`scheduler.test.ts` has its tests) |
+| `src/scheduler.ts` | The active scheduling algorithm behind one interface (`fsrs.test.ts`) |
+| `src/sm2.ts`, `src/fsrs.ts` | Simple SM-2 scheduler (`sm2.test.ts`) and FSRS via ts-fsrs |
+| `src/schedulerSettings.ts`, `src/SchedulingSettings.tsx` | Algorithm choice and FSRS options, and their settings section |
+| `src/demoHistory.ts` | Made-up review history for trying the schedulers (development builds only) |
 | `src/time.ts` | Time constants shared by the scheduler and the UI |
 | `src/DeckList.tsx` | Home screen: decks and due counts |
 | `src/Settings.tsx`, `src/llm.ts` | LLM settings, API key, chat request (`llm.test.ts`) |
