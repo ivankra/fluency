@@ -33,6 +33,8 @@ The app works under any URL prefix, set at build time with `BASE_PATH` (default 
 
 The service worker is off under `make dev`. To test installing the app or using it offline, use `make preview`.
 
+Google Drive sync needs an OAuth client ID (see [doc/drive-sync.md](doc/drive-sync.md#prerequisites-google-cloud-done-by-the-project-owner)). For local development, put `VITE_GOOGLE_CLIENT_ID=<id>` in `.env.local`; the deploy workflow reads the repository variable `GOOGLE_CLIENT_ID`. Without it, the app has no Drive features.
+
 ## Project layout
 
 | Path | Purpose |
@@ -41,6 +43,7 @@ The service worker is off under `make dev`. To test installing the app or using 
 | `doc/llm-grading.md` | Design for LLM grading and feedback |
 | `doc/voice.md` | Design for read-aloud, speech recognition and hands-free mode |
 | `doc/fsrs.md` | Design for FSRS scheduling and parameter tuning |
+| `doc/drive-sync.md` | Design for Google Drive sync, including the Google Cloud setup |
 | `index.html` | HTML entry point: meta tags, icons, root element |
 | `src/main.tsx` | Mounts React and seeds the sample decks on first run |
 | `src/App.tsx` | Root component: picks the screen from the URL |
@@ -60,6 +63,7 @@ The service worker is off under `make dev`. To test installing the app or using 
 | `src/grader.ts` | LLM grading prompt and response validation (`grader.test.ts`) |
 | `src/languages.ts`, `src/LanguagePicker.tsx` | Language tags and the language picker |
 | `src/DeckView.tsx`, `src/CardForm.tsx` | Deck editor: add, edit and delete cards |
+| `src/gdrive.ts`, `src/DriveSettings.tsx` | Google sign-in and Drive file access (`gdrive.test.ts`), and a temporary Settings section to test them |
 | `src/merge.ts`, `src/syncFile.ts` | Sync: merging two copies of the database (`merge.test.ts`), and the gzipped sync file with its validation (`syncFile.test.ts`) |
 | `src/storage.ts` | `localStorage` helpers for settings |
 | `src/sampleDecks.ts` | Starter decks (Spanish, Chinese, Japanese) |
