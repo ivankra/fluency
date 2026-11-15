@@ -8,8 +8,9 @@ browser. Setup, commands and the file map are in [README.md](../README.md).
 
 Status: the basic loop, scheduling, storage, card editing/export, sample decks, LLM
 grading and voice are done. Drive sync and FSRS are not. LLM grading is designed in
-[llm-grading.md](llm-grading.md), voice in [voice.md](voice.md) and Drive sync in
-[drive-sync.md](drive-sync.md); this document describes how they fit into the app.
+[llm-grading.md](llm-grading.md), voice in [voice.md](voice.md), Drive sync in
+[drive-sync.md](drive-sync.md) and FSRS in [fsrs.md](fsrs.md); this document describes
+how they fit into the app.
 
 ## Architecture
 
@@ -158,7 +159,7 @@ their checks are reset (checking again is explicit).
 ## Scheduling
 
 `src/scheduler.ts`: `schedule(sched, grade, now) → Sched`, a pure function with table
-tests. A simplified SM-2: whole-day intervals, no learning-step ladder, three grades.
+tests. FSRS as an alternative is designed in [fsrs.md](fsrs.md). A simplified SM-2: whole-day intervals, no learning-step ladder, three grades.
 For sentence production, where the user has just written the whole sentence, a short
 retry after a failure (at most two per session, so up to three graded attempts) was
 judged enough. Tunable constants are at the top of the file.
