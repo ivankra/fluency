@@ -6,6 +6,9 @@ Current features: decks and cards you can create, edit and export (CSV per deck,
 
 For how it works, see [doc/design.md](doc/design.md).
 
+## AI Usage
+We used Claude and GPT 6.1 for code refactoring, scaffolding, and some debugging. The most substantial parts of the project that were AI-assisted were the FSRS scheduling and LLM rich grading. Any and all AI code was reviewed by testing on local machines for errors or bugs. We also used the Claude Opus 5.5 reviewer sub-agent to ensure code quality.
+
 ## Requirements
 
 - Node.js 24+ and npm
