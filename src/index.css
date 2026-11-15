@@ -586,3 +586,7 @@ select {
   border-top: 1px dashed var(--border);
   padding-top: 10px;
 }
+
+.drive-actions {
+  flex-wrap: wrap;
+}

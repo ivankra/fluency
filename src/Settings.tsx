@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { listDecks } from './db'
+import DriveSettings from './DriveSettings'
 import LanguagePicker from './LanguagePicker'
 import SchedulingSettings from './SchedulingSettings'
 import { assessAnswer, DEFAULT_GRADING_RULES } from './grader'
@@ -336,6 +337,7 @@ export default function Settings() {
         </div>
       </form>
       <SchedulingSettings />
+      <DriveSettings />
       <VoiceSettings feedbackLanguage={feedbackLanguage} />
     </>
   )

@@ -73,21 +73,30 @@ export class DriveError extends Error { kind: DriveErrorKind }
 
 export const isDriveConfigured = () => !!import.meta.env.VITE_GOOGLE_CLIENT_ID
 
-// Must be called from a user gesture. Resolves with a token or throws DriveError('auth').
-export function requestToken(options: { prompt: '' | 'consent' }): Promise<Token>
+// Loads Google's sign-in script. Must finish before requestToken is called.
+export function loadGoogleAuth(): Promise<void>
+// Call synchronously from a tap. Resolves with a token or throws DriveError('auth').
+export function requestToken(prompt: '' | 'consent'): Promise<Token>
 export function currentToken(): Token | null  // null if missing or expiring within 2 minutes
 export function forgetToken(): void           // and revoke it with Google
 
-export interface RemoteFile { id: string; version: string; size: number }
-export function findSyncFiles(token: Token, signal: AbortSignal): Promise<RemoteFile[]>
-export function downloadSyncFile(token: Token, id: string, signal: AbortSignal): Promise<SyncFile>
-export function uploadSyncFile(token: Token, id: string | null, data: SyncFile, signal: AbortSignal): Promise<RemoteFile>
-export function deleteSyncFile(token: Token, id: string, signal: AbortSignal): Promise<void>
+// Transport only: bytes in, bytes out. The sync file's format (gzip, JSON, validation)
+// is a layer above, added with the merge.
+export interface RemoteFile { id: string; name: string; version: string; size: number }
+export function findFiles(token: Token, name: string, signal: AbortSignal): Promise<RemoteFile[]>
+export function downloadFile(token: Token, id: string, signal: AbortSignal): Promise<Uint8Array>
+export function uploadFile(token: Token, file: { id: string | null; name: string; data: Uint8Array | string; contentType: string }, signal: AbortSignal): Promise<RemoteFile>
+export function deleteFile(token: Token, id: string, signal: AbortSignal): Promise<void>
 ```
 
-- **GIS script** (`https://accounts.google.com/gsi/client`) loads on demand the first
-  time the user taps Connect or a paused sync, not on every start. It is not
-  precached by the service worker.
+- **GIS script** (`https://accounts.google.com/gsi/client`) loads on demand, not on
+  every start: when the Drive settings section or a paused-sync button appears.
+  Browsers only allow the popup if it opens synchronously within the tap, so
+  `requestToken` can't wait for the script; buttons stay disabled until it has
+  loaded. It is not precached by the service worker.
+- **Granular consent:** Google may let the user untick the Drive permission;
+  `requestToken` checks the granted scopes and fails with a clear message if
+  `drive.appdata` is missing.
 - **Requests** are plain `fetch` to `https://www.googleapis.com/drive/v3/files` (list
   with `spaces=appDataFolder&fields=files(id,version,size)`; get with `alt=media`) and
   `https://www.googleapis.com/upload/drive/v3/files` (multipart create with
@@ -328,6 +337,10 @@ Three PRs, each ending with `make test` passing.
 1. **Auth spike and Drive transport.** `gdrive.ts`, a temporary Settings section that
    connects and uploads/downloads a test file, the deploy variable. Done when the
    flow works on all four platforms, or the iOS home-screen fallback is decided.
+   *Status:* code done and unit-tested against fake Google services; the platform test
+   needs the OAuth client ID from [Prerequisites](#prerequisites-google-cloud-done-by-the-project-owner).
+   Results go in the PR, per platform: connect, write, read, delete, reconnect after
+   the token expires.
 2. **Data model and merge.** Tombstones, `sched.updatedAt`, fixed sample ids,
    `merge.ts`, file validation, `snapshot`/`applyMerge`, with tests. No UI; nothing
    syncs yet.
