@@ -530,3 +530,24 @@ select {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* Corrections: removed words struck through, added words highlighted. */
+.diff {
+  text-decoration: none;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.diff--removed {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
+.diff--added {
+  color: var(--good);
+  background: color-mix(in srgb, var(--good) 14%, transparent);
+}
+
+.diff--removed + .diff--added {
+  margin-left: 2px;
+}

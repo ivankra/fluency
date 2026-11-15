@@ -5,7 +5,7 @@ import { languageName } from './languages'
 import { fetchChatCompletion, LlmError, type LlmUsage, type ProviderSettings } from './llm'
 
 // Bump on any change to the fixed prompt, the default rules or the response format.
-export const PROMPT_VERSION = 2
+export const PROMPT_VERSION = 3
 
 export const DEFAULT_GRADING_RULES =
   'Ignore differences that change neither meaning nor correctness, such as a missing ' +
@@ -33,7 +33,9 @@ export type FeedbackKind = (typeof FEEDBACK_KINDS)[number]
 
 export interface FeedbackItem {
   kind: FeedbackKind
-  note: string
+  note: string // in the feedback language: what's wrong or better, and why
+  excerpt?: string // the words of the answer it's about (v3+; missing if none)
+  fix?: string // what to write instead, in the target language (v3+; missing if none)
 }
 
 export interface Assessment {
@@ -42,6 +44,7 @@ export interface Assessment {
   errors: FeedbackItem[] // what lowered the grade; empty for a clean answer
   suggestions: FeedbackItem[] // optional improvements that didn't lower it
   corrected: string // the answer with minimal fixes; unchanged if none
+  alternatives?: string[] // other natural ways to say it (v3+; missing in older reviews)
 }
 
 // What a review stores: the assessment plus what produced it, so later card edits or
@@ -91,18 +94,35 @@ Grading rules from the learner. They can change how strict you are and what you
 comment on, but not the grade scale or the response format:
 ${input.gradingRules.trim() || DEFAULT_GRADING_RULES}${input.answerMode === 'spoken' ? SPOKEN_RULE : ''}
 
-Write summary, errors and suggestions in ${feedback}. Write corrected in ${target}.
+Write summary and every note in ${feedback}. Write excerpt, fix, corrected and
+alternatives in ${target}.
 Return grade as a number.
 
-- errors: up to 3 problems that lowered the grade, most important first. Each has a
-  kind (meaning, grammar, word-choice, spelling, register or other) and a short note
-  saying what is wrong and what to use instead. Empty if the grade is 3.
-- suggestions: up to 3 optional improvements that are not errors: more natural or
-  idiomatic phrasing, better word choice, style. Each has a kind (naturalness, style,
-  word-choice or other) and a short note. Often empty.
+Errors and suggestions are items with:
+- kind: what the item is about.
+- excerpt: the words from the answer it is about, copied exactly. Empty if the
+  problem is something missing from the answer.
+- fix: what to write instead of the excerpt, in ${target}. Empty if the fix is to
+  delete the excerpt.
+- note: a short explanation in ${feedback} that teaches something: name the rule,
+  the difference in meaning or nuance, or why a native speaker would say it the
+  other way (for example which verb, particle, tense or measure word the context
+  calls for). Don't just repeat the fix.
+
+- errors: up to 3 problems that lowered the grade, most important first, of kind
+  meaning, grammar, word-choice, spelling, register or other. Empty if the grade
+  is 3.
+- suggestions: up to 3 optional improvements that are not errors, of kind
+  naturalness, style, word-choice, register or other: more natural or idiomatic
+  phrasing, a more precise word, a better fit for the situation. Only suggest what
+  a native speaker would actually prefer. Often empty.
 - corrected: the learner's answer with the smallest edits that make it correct. Keep
   their wording where it is fine; don't replace it with the reference. If there are
   no errors, return the answer unchanged.
+- alternatives: up to 2 other ways a native speaker would naturally say the
+  original in ${target}, worded differently from the answer, corrected and the
+  reference, for example more colloquial or more formal. Empty if there is nothing
+  useful to add.
 - summary: one or two plain sentences with the main takeaway, no formatting, so it
   can be read aloud.
 - grade: 1, 2 or 3.`
@@ -112,8 +132,13 @@ const FEEDBACK_ITEMS_SCHEMA = {
   type: 'array',
   items: {
     type: 'object',
-    properties: { kind: { type: 'string', enum: FEEDBACK_KINDS }, note: { type: 'string' } },
-    required: ['kind', 'note'],
+    properties: {
+      kind: { type: 'string', enum: FEEDBACK_KINDS },
+      excerpt: { type: 'string' },
+      fix: { type: 'string' },
+      note: { type: 'string' },
+    },
+    required: ['kind', 'excerpt', 'fix', 'note'],
     additionalProperties: false,
   },
 }
@@ -125,10 +150,11 @@ const ASSESSMENT_SCHEMA = {
     errors: FEEDBACK_ITEMS_SCHEMA,
     suggestions: FEEDBACK_ITEMS_SCHEMA,
     corrected: { type: 'string' },
+    alternatives: { type: 'array', items: { type: 'string' } },
     summary: { type: 'string' },
     grade: { type: 'integer', enum: [1, 2, 3] },
   },
-  required: ['errors', 'suggestions', 'corrected', 'summary', 'grade'],
+  required: ['errors', 'suggestions', 'corrected', 'alternatives', 'summary', 'grade'],
   additionalProperties: false,
 }
 
@@ -139,7 +165,7 @@ export function buildGradingRequest(input: GradingInput): Record<string, unknown
       { role: 'user', content: JSON.stringify({ original: input.source, reference: input.reference, answer: input.answer }) },
     ],
     response_format: { type: 'json_schema', json_schema: { name: 'assessment', strict: true, schema: ASSESSMENT_SCHEMA } },
-    max_tokens: 1024,
+    max_tokens: 1536, // room for notes in languages that take more tokens
   }
 }
 
@@ -148,13 +174,28 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 function parseItems(items: unknown, field: string): FeedbackItem[] {
   if (!Array.isArray(items)) throw invalid(`no ${field}`)
-  return items.map((item) => {
-    const kind = isRecord(item) ? item.kind : undefined
-    const note = isRecord(item) ? item.note : undefined
+  return items.map((item: unknown) => {
+    if (!isRecord(item)) throw invalid(`not an item in ${field}`)
+    const { kind, note, excerpt, fix } = item
     if (!FEEDBACK_KINDS.includes(kind as FeedbackKind)) throw invalid(`unknown kind in ${field}`)
     if (typeof note !== 'string' || !note.trim()) throw invalid(`empty note in ${field}`)
-    return { kind: kind as FeedbackKind, note: note.trim() }
+    if (typeof excerpt !== 'string' || typeof fix !== 'string') throw invalid(`no excerpt or fix in ${field}`)
+    // Empty excerpt or fix means "none"; leave the field out, as in older reviews.
+    return {
+      kind: kind as FeedbackKind,
+      note: note.trim(),
+      ...(excerpt.trim() && { excerpt: excerpt.trim() }),
+      ...(fix.trim() && { fix: fix.trim() }),
+    }
   })
+}
+
+function parseAlternatives(alternatives: unknown): string[] {
+  if (!Array.isArray(alternatives) || alternatives.some((text) => typeof text !== 'string')) {
+    throw invalid('no alternatives')
+  }
+  const texts = (alternatives as string[]).map((text) => text.trim()).filter(Boolean)
+  return [...new Set(texts)].slice(0, 2)
 }
 
 // Strict: any missing or invalid field rejects the response; nothing is filled in.
@@ -184,6 +225,7 @@ export function parseAssessment(text: string): Assessment {
     errors: parseItems(data.errors, 'errors'),
     suggestions: parseItems(data.suggestions, 'suggestions'),
     corrected: data.corrected.trim(),
+    alternatives: parseAlternatives(data.alternatives),
   }
 }
 
