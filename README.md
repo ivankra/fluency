@@ -66,6 +66,7 @@ Google Drive sync needs an OAuth client ID (see [doc/drive-sync.md](doc/drive-sy
 | `src/gdrive.ts` | Google sign-in and Drive file access (`gdrive.test.ts`) |
 | `src/sync.ts`, `src/driveSync.ts`, `src/changes.ts` | Drive sync engine and its triggers (`sync.test.ts`), wired to the app; local change counter |
 | `src/DriveSettings.tsx` | Settings → Google Drive sync, and the sync status line on the deck list |
+| `src/sampleIdentity.ts` | Gives sample decks from older installs their fixed ids before a sync merge, so devices don't end up with two copies (`sampleIdentity.test.ts`) |
 | `src/merge.ts`, `src/syncFile.ts` | Sync: merging two copies of the database (`merge.test.ts`), and the gzipped sync file with its validation (`syncFile.test.ts`) |
 | `src/storage.ts` | `localStorage` helpers for settings |
 | `src/sampleDecks.ts` | Starter decks (Spanish, Chinese, Japanese) |

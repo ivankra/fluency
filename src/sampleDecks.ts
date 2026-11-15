@@ -1,6 +1,6 @@
 // Starter decks so a fresh install has something to practice.
 // Each card is [front (English prompt), back (target-language sentence)].
-import { addCard, addDeck, listDecks, type Snapshot } from './db'
+import { addCard, addDeck, listDecks } from './db'
 
 export const SAMPLE_DECKS: { name: string; targetLanguage: string; cards: [string, string][] }[] = [
   {
@@ -56,24 +56,6 @@ export const SAMPLE_DECKS: { name: string; targetLanguage: string; cards: [strin
 const SEEDED_KEY = 'fluency:sample-decks-seeded'
 
 export const sampleDeckId = (targetLanguage: string) => `sample-${targetLanguage}`
-
-// Sample decks the user never touched: same name and cards as shipped, nothing studied.
-// On a device's first sync they are dropped locally if Drive already has data, so
-// devices installed before sample decks had fixed ids don't each add their own copy.
-export function untouchedSampleDecks(snapshot: Snapshot): string[] {
-  const studied = new Set(snapshot.reviews.map((review) => review.cardId))
-  return snapshot.decks
-    .filter((deck) => {
-      const sample = SAMPLE_DECKS.find((s) => s.name === deck.name)
-      if (!sample) return false
-      const cards = snapshot.cards.filter((card) => card.deckId === deck.id)
-      const key = (front: string, back: string) => `${front}\u0000${back}`
-      const shipped = sample.cards.map(([front, back]) => key(front, back)).sort()
-      const current = cards.map((card) => key(card.front, card.back)).sort()
-      return current.length === shipped.length && current.every((k, i) => k === shipped[i]) && !cards.some((card) => studied.has(card.id))
-    })
-    .map((deck) => deck.id)
-}
 
 // Add the sample decks once, on a fresh install. Never re-adds them after the
 // user deletes them, and never touches a database that already has decks.

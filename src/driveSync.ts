@@ -20,6 +20,7 @@ function loadRecord(): SyncRecord | null {
     changeCount: number(stored.changeCount),
     lastSyncAt: number(stored.lastSyncAt),
     firstSyncDone: stored.firstSyncDone === true,
+    sampleIds: stored.sampleIds === true,
   }
 }
 

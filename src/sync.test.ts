@@ -197,26 +197,47 @@ describe('syncing', () => {
     expect(phone.record()?.fileId).toBe('file-a')
   })
 
-  it('on the first sync, drops untouched sample decks if Drive has data, keeping studied ones', async () => {
-    const [spanish, chinese] = SAMPLE_DECKS
-    const sample = (name: string, cards: [string, string][], deckId: string) => ({
-      decks: [deck(deckId, 1, name)],
-      cards: cards.map(([front, back], i) => card(`${deckId}-${i}`, deckId, front, back)),
+  it('sample decks from older installs become one deck, studied or not, with removed cards staying removed', async () => {
+    const [spanish] = SAMPLE_DECKS
+    // As old installs made them: random ids, one set per device.
+    const oldSpanish = (prefix: string, skip: number[] = []): Snapshot => ({
+      ...empty(),
+      decks: [deck(`${prefix}-deck`, 1, spanish.name)],
+      cards: spanish.cards.map(([front, back], i) => card(`${prefix}-${i}`, `${prefix}-deck`, front, back)).filter((_, i) => !skip.includes(i)),
+      reviews: [{ id: `${prefix}-review`, cardId: `${prefix}-0`, at: 1, grade: 3 }],
     })
-    const es = sample(spanish.name, spanish.cards, 'random-es')
-    const zh = sample(chinese.name, chinese.cards, 'random-zh')
-    const local: Snapshot = { ...empty(), decks: [...es.decks, ...zh.decks], cards: [...es.cards, ...zh.cards], reviews: [{ id: 'r', cardId: 'random-zh-0', at: 1, grade: 3 }] }
     const drive = fakeDrive()
-    await drive.put({ ...empty(), decks: [deck('mine')] })
-    const phone = device(drive, local)
+    const phone = device(drive, oldSpanish('phone', [2])) // removed the third card
+    const laptop = device(drive, oldSpanish('laptop'))
     await phone.engine.connect()
-    expect(ids(phone.db().decks)).toEqual(['mine', 'random-zh'])
-    expect(phone.db().deletions).toEqual([]) // nothing deleted on other devices
-
-    // Only on the first sync.
-    phone.edit((s) => s.decks.push(...es.decks) && s.cards.push(...es.cards))
+    await laptop.engine.connect()
     await phone.engine.trigger()
-    expect(ids(phone.db().decks)).toContain('random-es')
+
+    for (const d of [phone, laptop]) {
+      expect(d.db().decks.map((x) => x.id)).toEqual(['sample-es'])
+      expect(d.db().cards).toHaveLength(spanish.cards.length - 1)
+      expect(ids(d.db().reviews)).toEqual(['laptop-review', 'phone-review'])
+    }
+    expect(canonical(sortSnapshot(phone.db()))).toBe(canonical(sortSnapshot(laptop.db())))
+  })
+
+  it('fixes duplicates synced before this fix, even when nothing changed since', async () => {
+    const [spanish] = SAMPLE_DECKS
+    const copy = (prefix: string) => ({
+      decks: [deck(`${prefix}-deck`, 1, spanish.name)],
+      cards: spanish.cards.map(([front, back], i) => card(`${prefix}-${i}`, `${prefix}-deck`, front, back)),
+    })
+    const [a, b] = [copy('a'), copy('b')]
+    const duplicated: Snapshot = { ...empty(), decks: [...a.decks, ...b.decks], cards: [...a.cards, ...b.cards] }
+    const drive = fakeDrive()
+    const fileId = await drive.put(duplicated)
+    const phone = device(drive, duplicated)
+    // Already synced with the old version: same file version, no local changes.
+    phone.deps.saveRecord({ connected: true, fileId, version: '1', changeCount: 0, lastSyncAt: 1, firstSyncDone: true })
+    const engine = new SyncEngine(phone.deps)
+    await engine.trigger()
+    expect(phone.db().decks.map((x) => x.id)).toEqual(['sample-es'])
+    expect(phone.record()).toMatchObject({ sampleIds: true })
   })
 })
 
