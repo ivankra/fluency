@@ -43,7 +43,9 @@ src/db.ts  ── the only module that touches Dexie ──▶ IndexedDB
   as a `Scheduler` object; see [Scheduling](#scheduling).
 - **Tests** (`make test`, vitest) cover the scheduler, the grader's prompt and
   validation, the API key handling in `llm.ts`, the study `Session` and the hands-free
-  loop with their I/O mocked, and the speech wrapper against fake browser APIs. The db layer and components are untested; `make eval` (paid, manual) checks
+  loop with their I/O mocked, and the speech wrapper against fake browser APIs.
+  `db.test.ts` covers the db layer's deletes, backups and schema upgrade on
+  `fake-indexeddb`; the rest of the db layer and the components are untested; `make eval` (paid, manual) checks
   grading quality against real models.
 - Styling is one global `src/index.css` using CSS variables, with a dark theme through
   `prefers-color-scheme`. Layout is a single 640px column, phone first.
@@ -58,8 +60,11 @@ IndexedDB database `fluency` (`src/db.ts`), schema version 1:
 | `cards` | `id`, `deckId`, `[deckId+sched.due]` | `front` (native, the prompt), `back` (target, the expected answer), `sched`, `updatedAt` |
 | `reviews` | `id`, `cardId`, `at` | one graded attempt: `grade` (1 bad, 2 fair, 3 good, the user's final say), optional typed or spoken `answer` (`answerMode: 'spoken'` when dictated), optional `assessment` (the LLM's grade and feedback, with the model, prompt version and graded input) |
 
-- Ids are UUIDs. Cards and decks carry `updatedAt`, set by every write, for the planned
-  Drive sync. Reviews are immutable once written and have no `updatedAt`, but they can
+- Ids are UUIDs, except the sample decks' fixed ids (`sample-es`, `sample-es-1`, …),
+  so devices that sync share them. Decks carry `updatedAt`, set by every write, for
+  the planned Drive sync. A card's `updatedAt` covers its text and deck;
+  schedule changes (review, skip, undo, rebuild) set `sched.updatedAt` instead, so
+  sync can merge an edit on one device with a review on another. Reviews are immutable once written and have no `updatedAt`, but they can
   be deleted: by undo, by the cascade when a card or deck is deleted, or by `importAll`.
 - `sched` is a nested object owned by the scheduler, which keeps scheduler fields out of
   `Card`. Its shape depends on the algorithm (`Sm2Sched` without `algo`, or `FsrsSched`
@@ -73,11 +78,15 @@ IndexedDB database `fluency` (`src/db.ts`), schema version 1:
   their old shape, so such changes need backward-compatible reads or an `.upgrade()`
   migration. TypeScript types don't change stored data.
 - No foreign keys: `deleteDeck` and `deleteCard` cascade by hand inside a transaction.
-  Deletes are hard deletes, so sync will need tombstones or a similar mechanism.
+  Deletes are hard deletes, but each one also writes a `Deletion` record (`{ id,
+  table, at }`, Dexie version 2) in the same transaction: deleting a deck records the
+  deck, its cards and their reviews; deleting a card records it and its reviews; undo
+  records the review it removes. Drive sync will use them so deletes reach other
+  devices ([drive-sync.md](drive-sync.md)). They are kept forever.
 - Skips are not reviews. `getDueCards` returns up to 20 cards with `sched.due <= now`,
   soonest first; `countDueCards` backs the counts on the home screen.
-- Backup contract: the JSON export (`exportAll`) holds decks, cards (with `sched`) and
-  reviews, and nothing from `localStorage` (such as the sample-deck flag). `importAll`
+- Backup contract: the JSON export (`exportAll`) holds decks, cards (with `sched`),
+  reviews and deletion records (`deletions`, missing in older backups), and nothing from `localStorage` (such as the sample-deck flag). `importAll`
   replaces the whole database in one transaction, but does no format validation and the
   file has no version field. Restore has no UI yet. CSV export carries only
   `front,back`, so it loses schedules and history.

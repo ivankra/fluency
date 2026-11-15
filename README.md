@@ -48,7 +48,7 @@ Google Drive sync needs an OAuth client ID (see [doc/drive-sync.md](doc/drive-sy
 | `src/main.tsx` | Mounts React and seeds the sample decks on first run |
 | `src/App.tsx` | Root component: picks the screen from the URL |
 | `src/route.ts` | Hash router |
-| `src/db.ts` | On-device storage (IndexedDB via Dexie): decks, cards, reviews, backup |
+| `src/db.ts` | On-device storage (IndexedDB via Dexie): decks, cards, reviews, deletion records, backup (`db.test.ts`, on fake-indexeddb) |
 | `src/scheduler.ts` | The active scheduling algorithm behind one interface (`fsrs.test.ts`) |
 | `src/sm2.ts`, `src/fsrs.ts` | Simple SM-2 scheduler (`sm2.test.ts`) and FSRS via ts-fsrs |
 | `src/schedulerSettings.ts`, `src/SchedulingSettings.tsx` | Algorithm choice and FSRS options, and their settings section |
@@ -64,6 +64,7 @@ Google Drive sync needs an OAuth client ID (see [doc/drive-sync.md](doc/drive-sy
 | `src/languages.ts`, `src/LanguagePicker.tsx` | Language tags and the language picker |
 | `src/DeckView.tsx`, `src/CardForm.tsx` | Deck editor: add, edit and delete cards |
 | `src/gdrive.ts`, `src/DriveSettings.tsx` | Google sign-in and Drive file access (`gdrive.test.ts`), and a temporary Settings section to test them |
+| `src/merge.ts`, `src/syncFile.ts` | Sync: merging two copies of the database (`merge.test.ts`), and the gzipped sync file with its validation (`syncFile.test.ts`) |
 | `src/storage.ts` | `localStorage` helpers for settings |
 | `src/sampleDecks.ts` | Starter decks (Spanish, Chinese, Japanese) |
 | `src/exportFile.ts` | CSV and JSON export |
