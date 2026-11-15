@@ -4,6 +4,7 @@
 // sync can detect conflicts now and merge per-entity later.
 import Dexie, { type EntityTable, type IDType } from 'dexie'
 import type { AnswerMode, ReviewAssessment } from './grader'
+import { noteChange } from './changes'
 import { canonical, sortSnapshot } from './merge'
 
 export interface Deck {
@@ -117,6 +118,14 @@ const recordDeletions = (table: Deletion['table'], ids: string[]) => {
 
 const newId = () => crypto.randomUUID()
 
+// Every user write goes through this, so Drive sync knows something changed (changes.ts).
+// Sync's own writes (applyMerge) don't.
+const changed = <T>(write: PromiseLike<T>): Promise<T> =>
+  Promise.resolve(write).then((value) => {
+    noteChange()
+    return value
+  })
+
 // Marks a schedule as changed now. The scheduler copies the old schedule into the new
 // one, so every write of a schedule goes through this.
 const stamp = <S extends Sched>(sched: S, at = Date.now()): S => ({ ...sched, updatedAt: at })
@@ -143,27 +152,29 @@ export async function addDeck(
   id: string = newId(), // fixed for sample decks, so devices that sync share them
 ): Promise<Deck> {
   const deck = { id, name, ...languages, updatedAt: Date.now() }
-  await db.decks.add(deck)
+  await changed(db.decks.add(deck))
   return deck
 }
 
 export const renameDeck = (id: string, name: string) =>
-  db.decks.update(id, { name, updatedAt: Date.now() })
+  changed(db.decks.update(id, { name, updatedAt: Date.now() }))
 
 export const setDeckLanguages = (id: string, sourceLanguage: string, targetLanguage: string) =>
-  db.decks.update(id, { sourceLanguage, targetLanguage, updatedAt: Date.now() })
+  changed(db.decks.update(id, { sourceLanguage, targetLanguage, updatedAt: Date.now() }))
 
 export const deleteDeck = (id: string) =>
-  db.transaction('rw', [db.decks, db.cards, db.reviews, db.deletions], async () => {
-    const cardIds = await db.cards.where('deckId').equals(id).primaryKeys()
-    const reviewIds = await db.reviews.where('cardId').anyOf(cardIds).primaryKeys()
-    await db.reviews.bulkDelete(reviewIds)
-    await db.cards.bulkDelete(cardIds)
-    await db.decks.delete(id)
-    await recordDeletions('reviews', reviewIds)
-    await recordDeletions('cards', cardIds)
-    await recordDeletions('decks', [id])
-  })
+  changed(
+    db.transaction('rw', [db.decks, db.cards, db.reviews, db.deletions], async () => {
+      const cardIds = await db.cards.where('deckId').equals(id).primaryKeys()
+      const reviewIds = await db.reviews.where('cardId').anyOf(cardIds).primaryKeys()
+      await db.reviews.bulkDelete(reviewIds)
+      await db.cards.bulkDelete(cardIds)
+      await db.decks.delete(id)
+      await recordDeletions('reviews', reviewIds)
+      await recordDeletions('cards', cardIds)
+      await recordDeletions('decks', [id])
+    }),
+  )
 
 // --- Cards ---
 
@@ -172,21 +183,23 @@ export const listCards = (deckId: string) => db.cards.where('deckId').equals(dec
 export async function addCard(deckId: string, front: string, back: string, id: string = newId()): Promise<Card> {
   const now = Date.now()
   const card = { id, deckId, front, back, sched: stamp(newSched(now), now), updatedAt: now }
-  await db.cards.add(card)
+  await changed(db.cards.add(card))
   return card
 }
 
 export const editCard = (id: string, front: string, back: string) =>
-  db.cards.update(id, { front, back, updatedAt: Date.now() })
+  changed(db.cards.update(id, { front, back, updatedAt: Date.now() }))
 
 export const deleteCard = (id: string) =>
-  db.transaction('rw', [db.cards, db.reviews, db.deletions], async () => {
-    const reviewIds = await db.reviews.where('cardId').equals(id).primaryKeys()
-    await db.reviews.bulkDelete(reviewIds)
-    await db.cards.delete(id)
-    await recordDeletions('reviews', reviewIds)
-    await recordDeletions('cards', [id])
-  })
+  changed(
+    db.transaction('rw', [db.cards, db.reviews, db.deletions], async () => {
+      const reviewIds = await db.reviews.where('cardId').equals(id).primaryKeys()
+      await db.reviews.bulkDelete(reviewIds)
+      await db.cards.delete(id)
+      await recordDeletions('reviews', reviewIds)
+      await recordDeletions('cards', [id])
+    }),
+  )
 
 const dueCards = (deckId: string, now: number) =>
   db.cards.where('[deckId+sched.due]').between([deckId, Dexie.minKey], [deckId, now], true, true)
@@ -207,48 +220,54 @@ export const recordReview = (
   sched: Sched,
   extra: { answer?: string; answerMode?: AnswerMode; assessment?: ReviewAssessment } = {},
 ) =>
-  db.transaction('rw', db.cards, db.reviews, async () => {
-    const now = Date.now()
-    const id = newId()
-    await db.reviews.add({ id, cardId: card.id, at: now, grade, ...extra })
-    await db.cards.update(card.id, { sched: stamp(sched, now) })
-    return id
-  })
+  changed(
+    db.transaction('rw', db.cards, db.reviews, async () => {
+      const now = Date.now()
+      const id = newId()
+      await db.reviews.add({ id, cardId: card.id, at: now, grade, ...extra })
+      await db.cards.update(card.id, { sched: stamp(sched, now) })
+      return id
+    }),
+  )
 
 // Take back a review or skip: restore the card's old schedule and drop the review, if any.
 export const undoAttempt = (cardId: string, sched: Sched, reviewId?: string) =>
-  db.transaction('rw', [db.cards, db.reviews, db.deletions], async () => {
-    if (reviewId) {
-      await db.reviews.delete(reviewId)
-      // It may already have been synced to another device.
-      await recordDeletions('reviews', [reviewId])
-    }
-    await db.cards.update(cardId, { sched: stamp(sched) })
-  })
+  changed(
+    db.transaction('rw', [db.cards, db.reviews, db.deletions], async () => {
+      if (reviewId) {
+        await db.reviews.delete(reviewId)
+        // It may already have been synced to another device.
+        await recordDeletions('reviews', [reviewId])
+      }
+      await db.cards.update(cardId, { sched: stamp(sched) })
+    }),
+  )
 
 // Skip: not a review, so no history entry. The caller (scheduler) computes `sched`.
 export const skipCard = (card: Card, sched: Sched) =>
-  db.cards.update(card.id, { sched: stamp(sched) })
+  changed(db.cards.update(card.id, { sched: stamp(sched) }))
 
 // Recompute schedules from review history, e.g. after switching algorithm. `cardIds`
 // limits it to those cards; returns how many cards were updated.
 export const rebuildSchedules = (rebuild: (card: Card, reviews: Review[]) => Sched, cardIds?: string[]) =>
-  db.transaction('rw', db.cards, db.reviews, async () => {
-    const cards = cardIds ? (await db.cards.bulkGet(cardIds)).filter((card) => card !== undefined) : await db.cards.toArray()
-    const reviews = cardIds ? await db.reviews.where('cardId').anyOf(cardIds).toArray() : await db.reviews.toArray()
-    const byCard = new Map<string, Review[]>()
-    for (const review of reviews) {
-      const list = byCard.get(review.cardId)
-      if (list) list.push(review)
-      else byCard.set(review.cardId, [review])
-    }
-    const now = Date.now()
-    await db.cards.bulkPut(cards.map((card) => ({ ...card, sched: stamp(rebuild(card, byCard.get(card.id) ?? []), now) })))
-    return cards.length
-  })
+  changed(
+    db.transaction('rw', db.cards, db.reviews, async () => {
+      const cards = cardIds ? (await db.cards.bulkGet(cardIds)).filter((card) => card !== undefined) : await db.cards.toArray()
+      const reviews = cardIds ? await db.reviews.where('cardId').anyOf(cardIds).toArray() : await db.reviews.toArray()
+      const byCard = new Map<string, Review[]>()
+      for (const review of reviews) {
+        const list = byCard.get(review.cardId)
+        if (list) list.push(review)
+        else byCard.set(review.cardId, [review])
+      }
+      const now = Date.now()
+      await db.cards.bulkPut(cards.map((card) => ({ ...card, sched: stamp(rebuild(card, byCard.get(card.id) ?? []), now) })))
+      return cards.length
+    }),
+  )
 
 // Development only (demo history): add past reviews in bulk.
-export const addReviews = (reviews: Review[]) => db.reviews.bulkAdd(reviews)
+export const addReviews = (reviews: Review[]) => changed(db.reviews.bulkAdd(reviews))
 
 // Per-card attempt counts as [bad, fair, good], for cards in a deck.
 export async function gradeCounts(deckId: string) {
@@ -311,13 +330,15 @@ export const applyMerge = (before: Snapshot, result: Snapshot) =>
 
 // Replaces the entire local database, deletion records included.
 export const importAll = (data: Backup) =>
-  db.transaction('rw', [db.decks, db.cards, db.reviews, db.deletions], async () => {
-    await Promise.all([db.decks.clear(), db.cards.clear(), db.reviews.clear(), db.deletions.clear()])
-    await db.decks.bulkAdd(data.decks)
-    await db.cards.bulkAdd(data.cards)
-    await db.reviews.bulkAdd(data.reviews)
-    await db.deletions.bulkAdd(data.deletions ?? [])
-  })
+  changed(
+    db.transaction('rw', [db.decks, db.cards, db.reviews, db.deletions], async () => {
+      await Promise.all([db.decks.clear(), db.cards.clear(), db.reviews.clear(), db.deletions.clear()])
+      await db.decks.bulkAdd(data.decks)
+      await db.cards.bulkAdd(data.cards)
+      await db.reviews.bulkAdd(data.reviews)
+      await db.deletions.bulkAdd(data.deletions ?? [])
+    }),
+  )
 
 // Ask the browser not to evict our data under storage pressure (matters on iOS/Safari).
 export const requestPersistentStorage = () => navigator.storage?.persist?.()

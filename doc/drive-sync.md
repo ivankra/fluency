@@ -233,11 +233,16 @@ type SyncStatus =
 3. If the file's `version` equals the last one this device uploaded or downloaded,
    and the change counter hasn't moved, stop: nothing to do. This is the common case
    and costs one small list request.
-4. Otherwise download (if the version changed), `merge(snapshot(), remote)`, then
-   `applyMerge` if `localChanged`, and `upload` if `remoteChanged` or there is no file
-   yet.
-5. Record the file's new `version`, the change counter and `lastSyncAt` in
-   `localStorage` (`fluency:sync`).
+4. If the file is unchanged but this device has changes, upload the local snapshot
+   without downloading: Drive still holds what this device last synced, and local
+   changes since are all newer or recorded deletions, so the local data is already the
+   merged state. This keeps a sync after each review to one list and one upload.
+5. Otherwise download every copy, `merge(snapshot(), remote)` (after dropping untouched
+   sample decks on the first sync), `applyMerge` (merging again, up to 3 times, if the
+   database changed meanwhile), and `upload` if `remoteChanged`, if there was no file
+   or if there were several.
+6. Record the file's new `version`, the change counter (read before the snapshot) and
+   `lastSyncAt` in `localStorage` (`fluency:sync`).
 
 **Guards:** one sync at a time; a trigger during a sync sets "run again" instead of
 starting another. Failures back off (30 s, 2 min, 10 min) and keep the last good
@@ -246,9 +251,12 @@ and retries on the `online` event. Leaving the app aborts a running sync; nothin
 half-applied, since `applyMerge` is one transaction and an upload replaces the file
 whole.
 
-**Triggers:** app start (if connected and a token is valid); 5 s after the change
-counter moves; `visibilitychange` to visible; a 5-minute timer while visible; Sync
-now. While a study session is running, syncs still run. `Study` works from its own
+**Triggers** (`startSyncTriggers` in `sync.ts`, started from `main.tsx` via
+`driveSync.ts`): app start; 5 s after the last local change (`changes.ts`, which
+`db.ts` notifies after each user write); `visibilitychange` to visible; `online`; a
+5-minute timer while visible; Sync now. A trigger during the backoff after an error
+is ignored; Sync now isn't. A file written by a newer app version stops automatic
+retries. While a study session is running, syncs still run. `Study` works from its own
 snapshot and writes with the usual functions, and step 4's abort-and-retry keeps a
 sync from overwriting a review recorded meanwhile.
 
@@ -263,19 +271,22 @@ next session sees them.
 - Not connected: a short explanation and **Connect Google Drive**. This opens
   Google's consent popup (`prompt: 'consent'`), then runs the first sync, including
   the sample-deck cleanup.
-- Connected: "Last synced 3 min ago", **Sync now**, **Disconnect**. Disconnect
-  revokes the token and stops syncing. It keeps the data both locally and on Drive,
-  and offers a separate **Delete data from Drive** with a confirmation.
-- Errors show inline with Retry, like the grading errors. `quota` explains that the
+- Connected: "Synced 3 min ago", **Sync now**, **Disconnect**. Disconnect revokes the
+  token and stops syncing. It keeps the data both locally and on Drive. A separate
+  **Delete data from Drive** (with a confirmation) deletes the sync file and
+  disconnects this device; other devices that still sync upload their copy again.
+- Errors show in the status line; **Sync now** retries. `quota` explains that the
   user's Drive is full.
 - Privacy note: "Your decks, cards and review history, including your answers and
   feedback, are stored in a hidden app folder in your Google Drive. The app can't see
   your other files." The README's privacy section changes to match.
 
-**Deck list header:** a small status next to the settings button:
-`Synced`, `Syncing…`, `Sync paused` (a button: tapping it requests a token with
-`prompt: ''`, which usually closes by itself without asking again, then syncs), or
-`Sync error` (links to settings). Nothing shows when sync is off.
+**Deck list:** one line under the header (the header itself is full on phones):
+"Synced 3 min ago", "Syncing…", "Paused: Google sign-in expired" with a **Sync now**
+button (requests a token with `prompt: ''`, which usually closes by itself without
+asking again, then syncs), "Offline…", or "Sync error: …" with **Details** linking to
+settings. Nothing shows when sync is off. Both places load Google's script on mount,
+so the buttons can open the popup straight from the tap.
 
 ## Auth on each platform
 
@@ -359,7 +370,11 @@ Three PRs, each ending with `make test` passing.
    `merge.ts`, `syncFile.ts` (gzip and validation), `snapshot`/`applyMerge`. The change
    counter and the first-sync sample cleanup move to step 3.
 3. **Sync engine and UI.** `sync.ts`, Settings section, deck-list status, README and
-   design.md updates.
+   design.md updates. *Status:* done (`sync.ts`, `driveSync.ts`, `changes.ts`,
+   `DriveSettings.tsx`), with the change counter and the first-sync sample cleanup
+   from step 2. Tested with fakes for Google and Drive, unit and in the browser;
+   still to do: real sign-in on the four platforms (step 1's checklist), which now
+   covers syncing too.
 
 ## Open questions
 

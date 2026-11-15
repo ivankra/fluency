@@ -11,3 +11,11 @@ export function formatInterval(ms: number): string {
   if (days < 365) return `${+(days / 30).toFixed(1)}mo`
   return `${+(days / 365).toFixed(1)}y`
 }
+
+// How long ago, for "Last synced 3 min ago".
+export function formatAgo(ms: number): string {
+  if (ms < MINUTE) return 'just now'
+  if (ms < HOUR) return `${Math.round(ms / MINUTE)} min ago`
+  if (ms < DAY) return `${Math.round(ms / HOUR)} h ago`
+  return `${Math.round(ms / DAY)} d ago`
+}
